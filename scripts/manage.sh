@@ -398,26 +398,32 @@ install_local_redis() {
         return 0
     fi
     
+    print_info "开始安装和配置 Redis..."
+    
+    local redis_service_name=""
+    local redis_config_path=""
+    
     case $OS in
         "debian")
             sudo $PACKAGE_MANAGER update
             sudo $PACKAGE_MANAGER install -y redis-server
-            sudo systemctl start redis-server
-            sudo systemctl enable redis-server
+            redis_service_name="redis-server"
+            redis_config_path="/etc/redis/redis.conf"
             ;;
         "redhat")
             sudo $PACKAGE_MANAGER install -y redis
-            sudo systemctl start redis
-            sudo systemctl enable redis
+            redis_service_name="redis"
+            redis_config_path="/etc/redis.conf"
             ;;
         "arch")
             sudo $PACKAGE_MANAGER -S --noconfirm redis
-            sudo systemctl start redis
-            sudo systemctl enable redis
+            redis_service_name="redis"
+            redis_config_path="/etc/redis.conf"
             ;;
         "macos")
             brew install redis
-            brew services start redis
+            # macOS 使用 homebrew 的配置路径
+            redis_config_path="/usr/local/etc/redis.conf"
             ;;
         *)
             print_error "不支持的操作系统，请手动安装 Redis"
@@ -425,7 +431,63 @@ install_local_redis() {
             ;;
     esac
     
-    print_success "Redis 安装完成"
+    # 配置 Redis
+    if [ -f "$redis_config_path" ]; then
+        print_info "配置 Redis 端口和密码..."
+        
+        # 备份原配置
+        sudo cp "$redis_config_path" "$redis_config_path.backup.$(date +%Y%m%d%H%M%S)"
+        
+        # 修改端口
+        sudo sed -i "s/^port 6379$/port $DEFAULT_REDIS_PORT/" "$redis_config_path"
+        sudo sed -i "s/^# port 6379$/port $DEFAULT_REDIS_PORT/" "$redis_config_path"
+        
+        # 设置密码
+        if [ -n "$DEFAULT_REDIS_PASSWORD" ]; then
+            # 移除现有的 requirepass 行
+            sudo sed -i '/^requirepass/d' "$redis_config_path"
+            sudo sed -i '/^# requirepass/d' "$redis_config_path"
+            # 添加新的密码配置
+            echo "requirepass $DEFAULT_REDIS_PASSWORD" | sudo tee -a "$redis_config_path" > /dev/null
+        fi
+        
+        # 设置绑定地址（允许本地连接）
+        sudo sed -i 's/^bind 127.0.0.1/bind 127.0.0.1 0.0.0.0/' "$redis_config_path"
+        
+        print_success "Redis 配置完成"
+        print_info "端口: $DEFAULT_REDIS_PORT"
+        if [ -n "$DEFAULT_REDIS_PASSWORD" ]; then
+            print_info "密码: $DEFAULT_REDIS_PASSWORD"
+        fi
+    else
+        print_warning "未找到 Redis 配置文件: $redis_config_path"
+        print_info "需要手动配置 Redis"
+    fi
+    
+    # 启动和启用服务
+    if [ "$OS" != "macos" ]; then
+        print_info "启动 Redis 服务..."
+        sudo systemctl start "$redis_service_name"
+        sudo systemctl enable "$redis_service_name"
+        
+        # 重启服务以应用新配置
+        print_info "重启 Redis 服务以应用配置..."
+        sudo systemctl restart "$redis_service_name"
+        
+        # 检查服务状态
+        if sudo systemctl is-active "$redis_service_name" >/dev/null 2>&1; then
+            print_success "Redis 服务运行正常"
+        else
+            print_error "Redis 服务启动失败"
+            print_info "请检查配置和日志: sudo journalctl -u $redis_service_name"
+        fi
+    else
+        print_info "启动 Redis 服务..."
+        brew services start redis
+        print_success "Redis 服务已启动"
+    fi
+    
+    print_success "Redis 安装和配置完成"
     return 0
 }
 
