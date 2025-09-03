@@ -288,17 +288,22 @@ check_redis() {
     # 测试Redis连接
     print_info "测试 Redis 连接..."
     if command_exists redis-cli; then
-        local redis_test_cmd="redis-cli -h $REDIS_HOST -p $REDIS_PORT"
         if [ -n "$REDIS_PASSWORD" ]; then
-            redis_test_cmd="$redis_test_cmd -a '$REDIS_PASSWORD'"
-        fi
-        
-        if $redis_test_cmd ping 2>/dev/null | grep -q "PONG"; then
-            print_success "Redis 连接成功"
-            return 0
+            if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
+                print_success "Redis 连接成功"
+                return 0
+            else
+                print_error "Redis 连接失败"
+                return 1
+            fi
         else
-            print_error "Redis 连接失败"
-            return 1
+            if redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping 2>/dev/null | grep -q "PONG"; then
+                print_success "Redis 连接成功"
+                return 0
+            else
+                print_error "Redis 连接失败"
+                return 1
+            fi
         fi
     else
         print_warning "redis-cli 未安装，跳过连接测试"
@@ -1322,21 +1327,21 @@ show_status() {
     # Redis状态
     if command_exists redis-cli; then
         echo -e "\nRedis 状态:"
-        local redis_cmd="redis-cli"
-        if [ -n "$REDIS_HOST" ]; then
-            redis_cmd="$redis_cmd -h $REDIS_HOST"
-        fi
-        if [ -n "$REDIS_PORT" ]; then
-            redis_cmd="$redis_cmd -p $REDIS_PORT"
-        fi
-        if [ -n "$REDIS_PASSWORD" ]; then
-            redis_cmd="$redis_cmd -a '$REDIS_PASSWORD'"
-        fi
+        local redis_host=${REDIS_HOST:-localhost}
+        local redis_port=${REDIS_PORT:-6379}
         
-        if $redis_cmd ping 2>/dev/null | grep -q "PONG"; then
-            echo -e "  连接状态: ${GREEN}正常${NC}"
+        if [ -n "$REDIS_PASSWORD" ]; then
+            if redis-cli -h "$redis_host" -p "$redis_port" -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
+                echo -e "  连接状态: ${GREEN}正常${NC}"
+            else
+                echo -e "  连接状态: ${RED}异常${NC}"
+            fi
         else
-            echo -e "  连接状态: ${RED}异常${NC}"
+            if redis-cli -h "$redis_host" -p "$redis_port" ping 2>/dev/null | grep -q "PONG"; then
+                echo -e "  连接状态: ${GREEN}正常${NC}"
+            else
+                echo -e "  连接状态: ${RED}异常${NC}"
+            fi
         fi
     fi
     
@@ -1407,15 +1412,21 @@ show_menu() {
     
     # Redis状态
     if command_exists redis-cli && [ -n "$REDIS_HOST" ]; then
-        local redis_cmd="redis-cli -h $REDIS_HOST -p ${REDIS_PORT:-6379}"
-        if [ -n "$REDIS_PASSWORD" ]; then
-            redis_cmd="$redis_cmd -a '$REDIS_PASSWORD'"
-        fi
+        local redis_host="$REDIS_HOST"
+        local redis_port="${REDIS_PORT:-6379}"
         
-        if $redis_cmd ping 2>/dev/null | grep -q "PONG"; then
-            echo -e "  Redis 状态: ${GREEN}连接正常${NC}"
+        if [ -n "$REDIS_PASSWORD" ]; then
+            if redis-cli -h "$redis_host" -p "$redis_port" -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
+                echo -e "  Redis 状态: ${GREEN}连接正常${NC}"
+            else
+                echo -e "  Redis 状态: ${RED}连接异常${NC}"
+            fi
         else
-            echo -e "  Redis 状态: ${RED}连接异常${NC}"
+            if redis-cli -h "$redis_host" -p "$redis_port" ping 2>/dev/null | grep -q "PONG"; then
+                echo -e "  Redis 状态: ${GREEN}连接正常${NC}"
+            else
+                echo -e "  Redis 状态: ${RED}连接异常${NC}"
+            fi
         fi
     fi
     
