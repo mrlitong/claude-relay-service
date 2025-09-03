@@ -167,11 +167,44 @@ install_nodejs() {
     
     case $OS in
         "debian")
-            # 使用 NodeSource 仓库
-            curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-            sudo $PACKAGE_MANAGER install -y nodejs
+            # 优先尝试系统包管理器（更简单可靠）
+            print_info "尝试使用系统包管理器安装 Node.js..."
+            if sudo $PACKAGE_MANAGER update && sudo $PACKAGE_MANAGER install -y nodejs npm; then
+                # 检查安装的版本是否符合要求
+                if check_node_version; then
+                    print_success "Node.js 安装成功: $(node -v)"
+                    return 0
+                else
+                    print_warning "系统包管理器安装的 Node.js 版本过低，尝试使用 NodeSource 仓库..."
+                    # 卸载旧版本
+                    sudo $PACKAGE_MANAGER remove -y nodejs npm
+                fi
+            fi
+            
+            # 回退到 NodeSource 仓库
+            print_info "使用 NodeSource 仓库安装 Node.js 18..."
+            if curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -; then
+                sudo $PACKAGE_MANAGER install -y nodejs
+            else
+                print_error "NodeSource 仓库配置失败"
+                return 1
+            fi
             ;;
         "redhat")
+            # 优先尝试系统包管理器
+            print_info "尝试使用系统包管理器安装 Node.js..."
+            if sudo $PACKAGE_MANAGER install -y nodejs npm; then
+                if check_node_version; then
+                    print_success "Node.js 安装成功: $(node -v)"
+                    return 0
+                else
+                    print_warning "系统包管理器安装的 Node.js 版本过低，尝试使用 NodeSource 仓库..."
+                    sudo $PACKAGE_MANAGER remove -y nodejs npm
+                fi
+            fi
+            
+            # 回退到 NodeSource 仓库
+            print_info "使用 NodeSource 仓库安装 Node.js 18..."
             curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
             sudo $PACKAGE_MANAGER install -y nodejs
             ;;
@@ -194,6 +227,18 @@ install_nodejs() {
     # 验证安装
     if check_node_version; then
         print_success "Node.js 安装成功: $(node -v)"
+        
+        # 验证npm是否也正常
+        if command_exists npm; then
+            print_success "npm 版本: $(npm -v)"
+        else
+            print_warning "npm 未安装，尝试安装..."
+            case $OS in
+                "debian"|"redhat")
+                    sudo $PACKAGE_MANAGER install -y npm
+                    ;;
+            esac
+        fi
         return 0
     else
         print_error "Node.js 安装失败或版本不符合要求"
@@ -204,6 +249,13 @@ install_nodejs() {
 # 安装基础依赖
 install_dependencies() {
     print_info "检查并安装基础依赖..."
+    
+    echo -e "\n${BLUE}=== 前置依赖检查 ===${NC}"
+    echo "Claude Relay Service 需要以下依赖："
+    echo "  • Node.js >= 18.0.0"
+    echo "  • npm (通常随 Node.js 安装)"
+    echo "  • git, curl, wget, lsof (系统工具)"
+    echo ""
     
     local deps_to_install=()
     
@@ -249,18 +301,36 @@ install_dependencies() {
     
     # 检查 Node.js
     if ! check_node_version; then
-        print_warning "未检测到 Node.js 18+ 版本"
-        install_nodejs || return 1
+        print_warning "未检测到 Node.js 18+ 版本，将自动安装..."
+        if install_nodejs; then
+            print_success "Node.js 自动安装成功"
+        else
+            print_error "Node.js 自动安装失败"
+            return 1
+        fi
     else
         print_success "Node.js 版本检查通过: $(node -v)"
     fi
     
     # 检查 npm
     if ! command_exists npm; then
-        print_error "npm 未安装"
-        return 1
+        print_warning "npm 未安装，尝试自动安装..."
+        case $OS in
+            "debian"|"redhat")
+                if sudo $PACKAGE_MANAGER install -y npm; then
+                    print_success "npm 自动安装成功: $(npm -v)"
+                else
+                    print_error "npm 自动安装失败"
+                    return 1
+                fi
+                ;;
+            *)
+                print_error "npm 未安装且无法自动安装，请手动安装"
+                return 1
+                ;;
+        esac
     else
-        print_success "npm 版本: $(npm -v)"
+        print_success "npm 版本检查通过: $(npm -v)"
     fi
     
     return 0
