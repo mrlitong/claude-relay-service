@@ -21,8 +21,8 @@ const config = {
   // 📊 Redis配置
   redis: {
     host: process.env.REDIS_HOST || '127.0.0.1',
-    port: parseInt(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD || '',
+    port: parseInt(process.env.REDIS_PORT) || 7890,
+    password: process.env.REDIS_PASSWORD || 'redisLItong318~',
     db: parseInt(process.env.REDIS_DB) || 0,
     connectTimeout: 10000,
     commandTimeout: 5000,
