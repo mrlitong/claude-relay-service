@@ -1153,6 +1153,14 @@
                   查看详情
                 </button>
                 <button
+                  class="flex-1 rounded-lg bg-green-50 px-3 py-2 text-xs text-green-600 transition-colors hover:bg-green-100 dark:bg-green-900/30 dark:text-green-300 dark:hover:bg-green-900/50"
+                  @click="revealApiKey(key)"
+                  title="查看完整API Key（需要管理员权限）"
+                >
+                  <i class="fas fa-eye mr-1" />
+                  查看Key
+                </button>
+                <button
                   class="flex-1 rounded-lg bg-gray-50 px-3 py-2 text-xs text-gray-600 transition-colors hover:bg-gray-100 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
                   @click="openEditApiKeyModal(key)"
                 >
@@ -2584,6 +2592,51 @@ watch(apiKeys, () => {
 
   updateSelectAllState()
 })
+
+// 👁️ 查看完整API Key
+const revealApiKey = async (apiKey) => {
+  try {
+    // 使用简单的提示框获取管理员密码
+    const password = window.prompt('请输入管理员密码以查看完整API Key:')
+    if (!password) return
+
+    const response = await fetch(`/webapi/admin/api-keys/${apiKey.id}/reveal`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${useAuthStore().token}`
+      },
+      body: JSON.stringify({ password })
+    })
+
+    const result = await response.json()
+
+    if (!response.ok) {
+      throw new Error(result.message || result.error || '查看API Key失败')
+    }
+
+    // 显示完整API Key的对话框
+    const data = result.data
+    const message = `
+API Key 名称: ${data.name}
+完整 API Key: ${data.apiKey}
+遮盖显示: ${data.maskedKey}
+
+查看时间: ${data.revealedAt}
+查看人员: ${data.revealedBy}
+
+⚠️ 请妥善保管此API Key，避免泄露
+    `.trim()
+
+    alert(message)
+    
+    showToast('API Key 已显示', 'success')
+    
+  } catch (error) {
+    console.error('查看API Key失败:', error)
+    showToast(`查看失败: ${error.message}`, 'error')
+  }
+}
 
 onMounted(async () => {
   // 并行加载所有需要的数据
