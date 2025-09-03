@@ -4,7 +4,7 @@ require('dotenv').config()
 const config = {
   // 🌐 服务器配置
   server: {
-    port: parseInt(process.env.PORT) || 3000,
+    port: parseInt(process.env.PORT) || 8888,
     host: process.env.HOST || '0.0.0.0',
     nodeEnv: process.env.NODE_ENV || 'development',
     trustProxy: process.env.TRUST_PROXY === 'true'

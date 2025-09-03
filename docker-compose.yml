@@ -11,14 +11,14 @@ services:
     restart: unless-stopped
     ports:
       # 绑定地址：生产环境建议使用反向代理，设置 BIND_HOST=127.0.0.1
-      - "${BIND_HOST:-0.0.0.0}:${PORT:-3000}:3000"
+      - "${BIND_HOST:-0.0.0.0}:${PORT:-8888}:8888"
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
     environment:
       # 🌐 服务器配置
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=8888
       - HOST=0.0.0.0
       
       # 🔐 安全配置（必填）
