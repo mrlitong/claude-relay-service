@@ -41,12 +41,16 @@ class ApiKeyService {
     const apiKey = `${this.prefix}${this._generateSecretKey()}`
     const keyId = uuidv4()
     const hashedKey = this._hashApiKey(apiKey)
+    
+    // 加密原始API Key用于后续查看
+    const encryptedApiKey = this._encryptApiKey(apiKey)
 
     const keyData = {
       id: keyId,
       name,
       description,
       apiKey: hashedKey,
+      encryptedApiKey: JSON.stringify(encryptedApiKey), // 新增：加密存储的完整API Key
       tokenLimit: String(tokenLimit ?? 0),
       concurrencyLimit: String(concurrencyLimit ?? 0),
       rateLimitWindow: String(rateLimitWindow ?? 0),
@@ -702,6 +706,95 @@ class ApiKeyService {
       .digest('hex')
   }
 
+  // 🔐 加密API Key（用于可查看存储）
+  _encryptApiKey(apiKey) {
+    const algorithm = 'aes-256-cbc'
+    const key = crypto.scryptSync(config.security.encryptionKey, 'salt', 32)
+    const iv = crypto.randomBytes(16)
+    
+    const cipher = crypto.createCipher(algorithm, key, iv)
+    let encrypted = cipher.update(apiKey, 'utf8', 'hex')
+    encrypted += cipher.final('hex')
+    
+    return {
+      encrypted,
+      iv: iv.toString('hex')
+    }
+  }
+
+  // 🔓 解密API Key
+  _decryptApiKey(encryptedData) {
+    try {
+      const algorithm = 'aes-256-cbc'
+      const key = crypto.scryptSync(config.security.encryptionKey, 'salt', 32)
+      const iv = Buffer.from(encryptedData.iv, 'hex')
+      
+      const decipher = crypto.createDecipher(algorithm, key, iv)
+      let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8')
+      decrypted += decipher.final('utf8')
+      
+      return decrypted
+    } catch (error) {
+      logger.error('❌ Failed to decrypt API key:', error)
+      throw new Error('Failed to decrypt API key')
+    }
+  }
+
+  // 👁️ 获取完整API Key（管理员权限）
+  async revealApiKey(keyId, adminInfo = {}) {
+    try {
+      const keyData = await redis.getApiKey(keyId)
+      
+      if (!keyData) {
+        throw new Error('API key not found')
+      }
+
+      if (!keyData.encryptedApiKey) {
+        throw new Error('API key was created before encryption feature, cannot retrieve')
+      }
+
+      const encryptedData = JSON.parse(keyData.encryptedApiKey)
+      const decryptedApiKey = this._decryptApiKey(encryptedData)
+      
+      // 记录访问日志
+      logger.info('🔍 API Key revealed', {
+        keyId,
+        keyName: keyData.name,
+        adminUser: adminInfo.username || 'unknown',
+        adminId: adminInfo.id || 'unknown',
+        timestamp: new Date().toISOString(),
+        clientIp: adminInfo.clientIp || 'unknown'
+      })
+
+      return {
+        id: keyId,
+        apiKey: decryptedApiKey,
+        name: keyData.name,
+        description: keyData.description,
+        // 部分遮盖显示，便于确认
+        maskedKey: this._maskApiKey(decryptedApiKey),
+        revealedAt: new Date().toISOString(),
+        revealedBy: adminInfo.username || 'admin'
+      }
+    } catch (error) {
+      logger.error('❌ Failed to reveal API key:', {
+        keyId,
+        error: error.message,
+        adminUser: adminInfo.username || 'unknown'
+      })
+      throw error
+    }
+  }
+
+  // 🎭 部分遮盖API Key显示
+  _maskApiKey(apiKey) {
+    if (!apiKey || apiKey.length < 10) return '***'
+    const prefix = apiKey.substring(0, 8)
+    const suffix = apiKey.substring(apiKey.length - 6)
+    const middle = '*'.repeat(Math.min(apiKey.length - 14, 20))
+    return `${prefix}${middle}${suffix}`
+  }
+
   // 📈 获取使用统计
   async getUsageStats(keyId) {
     return await redis.getUsageStats(keyId)
@@ -820,6 +913,9 @@ class ApiKeyService {
       // 生成新的key
       const newApiKey = `${this.prefix}${this._generateSecretKey()}`
       const newHashedKey = this._hashApiKey(newApiKey)
+      
+      // 加密新的API Key用于后续查看
+      const newEncryptedApiKey = this._encryptApiKey(newApiKey)
 
       // 删除旧的哈希映射
       const oldHashedKey = existingKey.apiKey
@@ -829,6 +925,7 @@ class ApiKeyService {
       const updatedKeyData = {
         ...existingKey,
         apiKey: newHashedKey,
+        encryptedApiKey: JSON.stringify(newEncryptedApiKey), // 更新加密存储
         updatedAt: new Date().toISOString()
       }
 
