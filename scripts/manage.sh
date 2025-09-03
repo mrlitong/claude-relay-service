@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 # 默认配置
 DEFAULT_INSTALL_DIR="$HOME/claude-relay-service"
 DEFAULT_REDIS_HOST="localhost"
-DEFAULT_REDIS_PORT="6379"
+DEFAULT_REDIS_PORT="7890"
 DEFAULT_REDIS_PASSWORD=""
 DEFAULT_APP_PORT="3000"
 
@@ -1328,7 +1328,7 @@ show_status() {
     if command_exists redis-cli; then
         echo -e "\nRedis 状态:"
         local redis_host=${REDIS_HOST:-localhost}
-        local redis_port=${REDIS_PORT:-6379}
+        local redis_port=${REDIS_PORT:-7890}
         
         if [ -n "$REDIS_PASSWORD" ]; then
             if redis-cli -h "$redis_host" -p "$redis_port" -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
@@ -1413,7 +1413,7 @@ show_menu() {
     # Redis状态
     if command_exists redis-cli && [ -n "$REDIS_HOST" ]; then
         local redis_host="$REDIS_HOST"
-        local redis_port="${REDIS_PORT:-6379}"
+        local redis_port="${REDIS_PORT:-7890}"
         
         if [ -n "$REDIS_PASSWORD" ]; then
             if redis-cli -h "$redis_host" -p "$redis_port" -a "$REDIS_PASSWORD" ping 2>/dev/null | grep -q "PONG"; then
@@ -1478,7 +1478,7 @@ handle_menu_choice() {
                     
                     # 重新测试连接
                     REDIS_HOST="localhost"
-                    REDIS_PORT="6379"
+                    REDIS_PORT="7890"
                     if ! check_redis; then
                         print_error "Redis 配置失败，请手动安装并配置 Redis"
                         echo -n "按回车键继续..."
@@ -1698,7 +1698,7 @@ main() {
                 
                 # 重新测试连接
                 REDIS_HOST="localhost"
-                REDIS_PORT="6379"
+                REDIS_PORT="7890"
                 if ! check_redis; then
                     print_error "Redis 配置失败，请手动安装并配置 Redis"
                     exit 1
