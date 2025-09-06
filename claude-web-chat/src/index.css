@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar styles */
+@layer utilities {
+  /* Light mode scrollbar */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-100;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-400 rounded-full;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+  
+  /* Dark mode scrollbar */
+  .dark .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-gray-800;
+  }
+  
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-gray-600;
+  }
+  
+  .dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+}
+
+/* Smooth transitions for theme switching */
+* {
+  @apply transition-colors duration-200;
+}
+
+/* Markdown styles */
+.prose pre {
+  @apply bg-gray-900 text-gray-100;
+}
+
+.prose code {
+  @apply text-blue-600 dark:text-blue-400;
+}
+
+/* Animation for streaming text cursor */
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.animate-blink {
+  animation: blink 1s infinite;
+}

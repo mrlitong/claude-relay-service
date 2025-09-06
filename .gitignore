@@ -246,3 +246,15 @@ web/apiStats/
 
 # Admin SPA build files
 web/admin-spa/dist/
+
+# Claude Web Chat (前端项目)
+claude-web-chat/node_modules/
+claude-web-chat/dist/
+claude-web-chat/dist-ssr/
+claude-web-chat/.env
+claude-web-chat/.env.local
+claude-web-chat/.env.production
+claude-web-chat/*.local
+claude-web-chat/package-lock.json
+claude-web-chat/.vscode/
+claude-web-chat/.idea/
