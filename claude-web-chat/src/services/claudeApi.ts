@@ -59,6 +59,14 @@ class ClaudeAPIService {
     if (savedModel) {
       this.currentModel = savedModel;
     }
+    
+    // 防止设置界面意外覆盖为错误的URL
+    const savedUrl = localStorage.getItem('relay_service_url');
+    if (savedUrl && savedUrl.includes('149.88.90.105')) {
+      console.warn('Detected incorrect relay URL in localStorage, clearing...');
+      localStorage.removeItem('relay_service_url');
+      this.baseURL = ''; // 强制使用相对路径
+    }
   }
 
   /**
@@ -210,7 +218,13 @@ class ClaudeAPIService {
    * 设置基础URL
    */
   setBaseURL(url: string) {
-    this.baseURL = url;
+    // 防止设置为错误的远程URL，应该使用空字符串让Vite代理处理
+    if (url && url.includes('149.88.90.105')) {
+      console.warn('Attempting to set remote URL directly, using proxy instead');
+      this.baseURL = '';
+    } else {
+      this.baseURL = url;
+    }
   }
 
   /**

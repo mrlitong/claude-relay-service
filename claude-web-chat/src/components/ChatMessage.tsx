@@ -9,7 +9,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
 import { User, Bot, Copy, Check } from 'lucide-react';
 import { Message } from '../services/claudeApi';
-import 'highlight.js/styles/github-dark.css';
+// import 'highlight.js/styles/github-dark.css';
 
 interface ChatMessageProps {
   message: Message;
