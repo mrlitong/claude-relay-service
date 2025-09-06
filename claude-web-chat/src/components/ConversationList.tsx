@@ -3,10 +3,15 @@
  */
 
 import React from 'react';
-import { MessageSquare, Trash2, Edit2, Check, X } from 'lucide-react';
+import { MessageSquare, Trash2, Edit2, Check, X, Settings, ChevronLeft } from 'lucide-react';
 import useChatStore from '../stores/chatStore';
 
-const ConversationList: React.FC = () => {
+interface ConversationListProps {
+  onOpenSettings: () => void;
+  onToggleSidebar?: () => void;
+}
+
+const ConversationList: React.FC<ConversationListProps> = ({ onOpenSettings, onToggleSidebar }) => {
   const [editingId, setEditingId] = React.useState<string | null>(null);
   const [editTitle, setEditTitle] = React.useState('');
   
@@ -52,20 +57,31 @@ const ConversationList: React.FC = () => {
   };
   
   return (
-    <div className="h-full bg-gray-50 dark:bg-gray-800 flex flex-col">
+    <div className="h-full flex flex-col bg-secondary">
       {/* Header */}
-      <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+      <div className="p-5 border-b border-primary flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-primary">
           Chat History
         </h2>
+        {onToggleSidebar && (
+          <button
+            onClick={onToggleSidebar}
+            className="p-2 hover:bg-hover rounded-xl transition-all duration-200 hover-lift"
+            title="Collapse sidebar"
+          >
+            <ChevronLeft className="w-5 h-5 text-secondary" />
+          </button>
+        )}
       </div>
       
       {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto p-2">
+      <div className="flex-1 overflow-y-auto p-3 scrollbar-thin">
         {sortedConversations.length === 0 ? (
-          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-            <MessageSquare className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>No conversations yet</p>
+          <div className="text-center py-12">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-tertiary flex items-center justify-center">
+              <MessageSquare className="w-8 h-8 text-tertiary" />
+            </div>
+            <p className="text-secondary">No conversations yet</p>
           </div>
         ) : (
           <div className="space-y-1">
@@ -76,10 +92,10 @@ const ConversationList: React.FC = () => {
               return (
                 <div
                   key={conversation.id}
-                  className={`group relative rounded-lg transition-colors ${
+                  className={`group relative rounded-xl transition-all duration-200 mb-1 ${
                     isActive
-                      ? 'bg-blue-100 dark:bg-blue-900/30'
-                      : 'hover:bg-gray-100 dark:hover:bg-gray-700'
+                      ? 'bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/20'
+                      : 'hover:bg-hover'
                   }`}
                 >
                   {isEditing ? (
@@ -92,20 +108,20 @@ const ConversationList: React.FC = () => {
                           if (e.key === 'Enter') handleSaveEdit();
                           if (e.key === 'Escape') handleCancelEdit();
                         }}
-                        className="flex-1 px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-900 text-sm"
+                        className="flex-1 px-3 py-1.5 border border-primary rounded-lg bg-tertiary text-primary text-sm focus:outline-none focus:border-hover"
                         autoFocus
                       />
                       <button
                         onClick={handleSaveEdit}
-                        className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"
+                        className="p-1.5 hover:bg-tertiary rounded-lg transition-colors"
                       >
-                        <Check className="w-4 h-4 text-green-500" />
+                        <Check className="w-4 h-4" style={{ color: 'rgb(var(--color-success))' }} />
                       </button>
                       <button
                         onClick={handleCancelEdit}
-                        className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"
+                        className="p-1.5 hover:bg-tertiary rounded-lg transition-colors"
                       >
-                        <X className="w-4 h-4 text-red-500" />
+                        <X className="w-4 h-4" style={{ color: 'rgb(var(--color-error))' }} />
                       </button>
                     </div>
                   ) : (
@@ -113,13 +129,17 @@ const ConversationList: React.FC = () => {
                       onClick={() => selectConversation(conversation.id)}
                       className="flex items-start gap-3 p-3 cursor-pointer"
                     >
-                      <MessageSquare className="w-5 h-5 text-gray-500 flex-shrink-0 mt-0.5" />
+                      <div className={`w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0 ${
+                        isActive ? 'gradient-accent shadow-sm' : 'bg-tertiary'
+                      }`}>
+                        <MessageSquare className={`w-5 h-5 ${isActive ? 'text-white' : 'text-secondary'}`} />
+                      </div>
                       
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                        <p className="text-sm font-medium text-primary truncate">
                           {conversation.title}
                         </p>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                        <p className="text-xs text-tertiary">
                           {formatDate(conversation.updatedAt)} · {conversation.messages.length} messages
                         </p>
                       </div>
@@ -131,10 +151,10 @@ const ConversationList: React.FC = () => {
                             e.stopPropagation();
                             handleEdit(conversation.id, conversation.title);
                           }}
-                          className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"
+                          className="p-1.5 hover:bg-tertiary rounded-lg transition-all duration-200"
                           title="Edit title"
                         >
-                          <Edit2 className="w-4 h-4 text-gray-500" />
+                          <Edit2 className="w-4 h-4 text-tertiary hover:text-secondary" />
                         </button>
                         <button
                           onClick={(e) => {
@@ -143,10 +163,10 @@ const ConversationList: React.FC = () => {
                               deleteConversation(conversation.id);
                             }
                           }}
-                          className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded"
+                          className="p-1.5 hover:bg-tertiary rounded-lg transition-all duration-200"
                           title="Delete"
                         >
-                          <Trash2 className="w-4 h-4 text-red-500" />
+                          <Trash2 className="w-4 h-4 hover:opacity-80" style={{ color: 'rgb(var(--color-error))' }} />
                         </button>
                       </div>
                     </div>
@@ -158,9 +178,17 @@ const ConversationList: React.FC = () => {
         )}
       </div>
       
-      {/* Footer Info */}
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 text-center">
-        Powered by Claude Relay Service
+      {/* Footer with Settings */}
+      <div className="border-t border-primary">
+        <button
+          onClick={onOpenSettings}
+          className="w-full p-4 flex items-center gap-3 hover:bg-hover transition-all duration-200 text-left group"
+        >
+          <div className="w-9 h-9 rounded-xl bg-tertiary group-hover:bg-hover flex items-center justify-center transition-colors">
+            <Settings className="w-5 h-5 text-secondary group-hover:rotate-45 transition-transform duration-300" />
+          </div>
+          <span className="text-sm font-medium text-primary">Settings</span>
+        </button>
       </div>
     </div>
   );

@@ -17,7 +17,6 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
   const [relayUrl, setRelayUrl] = useState('');
   const [selectedModel, setSelectedModel] = useState<ModelId>('claude-sonnet-4-20250514');
   const [showApiKey, setShowApiKey] = useState(false);
-  const [saved, setSaved] = useState(false);
   
   useEffect(() => {
     // 从localStorage加载设置
@@ -41,26 +40,26 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
     claudeApi.setBaseURL(relayUrl); // 空字符串使用相对路径
     claudeApi.setModel(selectedModel);
     
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    // 立即关闭弹窗
+    onClose();
   };
   
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200" onClick={onClose}>
       <div 
-        className="bg-white dark:bg-gray-800 rounded-lg shadow-xl w-full max-w-md mx-4"
+        className="card w-full max-w-md mx-4 animate-in slide-in-from-bottom duration-300"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+        <div className="flex items-center justify-between p-6 border-b border-primary">
+          <h2 className="text-xl font-bold text-primary">
             Settings
           </h2>
           <button
             onClick={onClose}
-            className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            className="p-2.5 hover:bg-hover rounded-xl transition-all duration-200 hover-lift"
           >
-            <X className="w-5 h-5" />
+            <X className="w-5 h-5 text-secondary" />
           </button>
         </div>
         
@@ -68,13 +67,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
         <div className="p-6 space-y-6">
           {/* API Configuration */}
           <div>
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">
+            <h3 className="text-sm font-semibold text-primary mb-4 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full gradient-accent"></div>
               API Configuration
             </h3>
             
             {/* Relay Service URL */}
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-primary mb-2">
                 Relay Service URL
               </label>
               <input
@@ -82,16 +82,16 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
                 value={relayUrl}
                 onChange={(e) => setRelayUrl(e.target.value)}
                 placeholder="http://localhost:3000"
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-gray-100"
+                className="w-full px-4 py-2.5 bg-tertiary border border-primary rounded-xl text-primary placeholder:text-tertiary focus:outline-none focus:border-hover transition-all duration-200"
               />
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-2 text-xs text-tertiary">
                 URL of your Claude Relay Service instance
               </p>
             </div>
             
             {/* API Key */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <div className="mb-5">
+              <label className="block text-sm font-medium text-primary mb-2">
                 API Key
               </label>
               <div className="relative">
@@ -100,35 +100,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="cr_your_api_key_here"
-                  className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-gray-100"
+                  className="w-full px-4 py-2.5 pr-12 bg-tertiary border border-primary rounded-xl text-primary placeholder:text-tertiary focus:outline-none focus:border-hover transition-all duration-200"
                 />
                 <button
                   type="button"
                   onClick={() => setShowApiKey(!showApiKey)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 hover:bg-hover rounded-lg transition-all duration-200"
                 >
                   {showApiKey ? (
-                    <EyeOff className="w-4 h-4 text-gray-500" />
+                    <EyeOff className="w-4 h-4 text-secondary" />
                   ) : (
-                    <Eye className="w-4 h-4 text-gray-500" />
+                    <Eye className="w-4 h-4 text-secondary" />
                   )}
                 </button>
               </div>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-2 text-xs text-tertiary">
                 Your API key from Claude Relay Service (starts with cr_)
               </p>
             </div>
             
             {/* Model Selection */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                <Cpu className="w-4 h-4 inline mr-1" />
+              <label className="block text-sm font-medium text-primary mb-2">
+                <Cpu className="w-4 h-4 inline mr-2 text-secondary" />
                 Claude Model
               </label>
               <select
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value as ModelId)}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-gray-100"
+                className="w-full px-4 py-2.5 bg-tertiary border border-primary rounded-xl text-primary focus:outline-none focus:border-hover transition-all duration-200 cursor-pointer"
               >
                 {AVAILABLE_MODELS.map((model) => (
                   <option key={model.id} value={model.id}>
@@ -136,7 +136,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
                   </option>
                 ))}
               </select>
-              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-2 text-xs text-tertiary">
                 {AVAILABLE_MODELS.find(m => m.id === selectedModel)?.description}
               </p>
             </div>
@@ -144,30 +144,31 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
           
           {/* Theme Settings */}
           <div>
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-4">
+            <h3 className="text-sm font-semibold text-primary mb-4 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-gradient-to-r from-yellow-400 to-orange-500"></div>
               Appearance
             </h3>
             
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-700 dark:text-gray-300">
+            <div className="flex items-center justify-between p-3 bg-tertiary rounded-xl">
+              <span className="text-sm font-medium text-primary">
                 Dark Mode
               </span>
               <button
                 onClick={() => setDarkMode(!darkMode)}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                  darkMode ? 'bg-blue-600' : 'bg-gray-200'
+                className={`relative inline-flex h-7 w-14 items-center rounded-full transition-all duration-300 ${
+                  darkMode ? 'gradient-accent shadow-glow' : 'bg-gray-300'
                 }`}
               >
                 <span
-                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                    darkMode ? 'translate-x-6' : 'translate-x-1'
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform duration-300 ${
+                    darkMode ? 'translate-x-7' : 'translate-x-1'
                   }`}
                 />
                 <span className="sr-only">Toggle dark mode</span>
                 {darkMode ? (
-                  <Moon className="absolute right-1 w-3 h-3 text-white" />
+                  <Moon className="absolute right-1.5 w-3.5 h-3.5 text-white" />
                 ) : (
-                  <Sun className="absolute left-1 w-3 h-3 text-gray-600" />
+                  <Sun className="absolute left-1.5 w-3.5 h-3.5 text-gray-600" />
                 )}
               </button>
             </div>
@@ -175,19 +176,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ darkMode, setDarkMode, on
         </div>
         
         {/* Footer */}
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 bg-tertiary/30 border-t border-primary">
           <button
             onClick={onClose}
-            className="px-4 py-2 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            className="btn-secondary"
           >
             Cancel
           </button>
           <button
             onClick={handleSave}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            className="btn-primary flex items-center gap-2"
           >
             <Save className="w-4 h-4" />
-            {saved ? 'Saved!' : 'Save Changes'}
+            Save Changes
           </button>
         </div>
       </div>
