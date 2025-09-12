@@ -34,7 +34,10 @@ class ApiKeyService {
       allowedClients = [],
       dailyCostLimit = 0,
       weeklyOpusCostLimit = 0,
-      tags = []
+      tags = [],
+      activationDays = 0, // 新增：激活后有效天数（0表示不使用此功能）
+      expirationMode = 'fixed', // 新增：过期模式 'fixed'(固定时间) 或 'activation'(首次使用后激活)
+      icon = '' // 新增：图标（base64编码）
     } = options
 
     // 生成简单的API Key (64字符十六进制)
@@ -67,12 +70,17 @@ class ApiKeyService {
       dailyCostLimit: String(dailyCostLimit || 0),
       weeklyOpusCostLimit: String(weeklyOpusCostLimit || 0),
       tags: JSON.stringify(tags || []),
+      activationDays: String(activationDays || 0), // 新增：激活后有效天数
+      expirationMode: expirationMode || 'fixed', // 新增：过期模式
+      isActivated: expirationMode === 'fixed' ? 'true' : 'false', // 根据模式决定激活状态
+      activatedAt: expirationMode === 'fixed' ? new Date().toISOString() : '', // 激活时间
       createdAt: new Date().toISOString(),
       lastUsedAt: '',
-      expiresAt: expiresAt || '',
+      expiresAt: expirationMode === 'fixed' ? expiresAt || '' : '', // 固定模式才设置过期时间
       createdBy: options.createdBy || 'admin',
       userId: options.userId || '',
-      userUsername: options.userUsername || ''
+      userUsername: options.userUsername || '',
+      icon: icon || '' // 新增：图标（base64编码）
     }
 
     // 保存API Key数据并建立哈希映射
@@ -105,6 +113,10 @@ class ApiKeyService {
       dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
       weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
       tags: JSON.parse(keyData.tags || '[]'),
+      activationDays: parseInt(keyData.activationDays || 0),
+      expirationMode: keyData.expirationMode || 'fixed',
+      isActivated: keyData.isActivated === 'true',
+      activatedAt: keyData.activatedAt,
       createdAt: keyData.createdAt,
       expiresAt: keyData.expiresAt,
       createdBy: keyData.createdBy
@@ -131,6 +143,27 @@ class ApiKeyService {
       // 检查是否激活
       if (keyData.isActive !== 'true') {
         return { valid: false, error: 'API key is disabled' }
+      }
+
+      // 处理激活逻辑（仅在 activation 模式下）
+      if (keyData.expirationMode === 'activation' && keyData.isActivated !== 'true') {
+        // 首次使用，需要激活
+        const now = new Date()
+        const activationDays = parseInt(keyData.activationDays || 30) // 默认30天
+        const expiresAt = new Date(now.getTime() + activationDays * 24 * 60 * 60 * 1000)
+
+        // 更新激活状态和过期时间
+        keyData.isActivated = 'true'
+        keyData.activatedAt = now.toISOString()
+        keyData.expiresAt = expiresAt.toISOString()
+        keyData.lastUsedAt = now.toISOString()
+
+        // 保存到Redis
+        await redis.setApiKey(keyData.id, keyData)
+
+        logger.success(
+          `🔓 API key activated: ${keyData.id} (${keyData.name}), will expire in ${activationDays} days at ${expiresAt.toISOString()}`
+        )
       }
 
       // 检查是否过期
@@ -225,6 +258,126 @@ class ApiKeyService {
     }
   }
 
+  // 🔍 验证API Key（仅用于统计查询，不触发激活）
+  async validateApiKeyForStats(apiKey) {
+    try {
+      if (!apiKey || !apiKey.startsWith(this.prefix)) {
+        return { valid: false, error: 'Invalid API key format' }
+      }
+
+      // 计算API Key的哈希值
+      const hashedKey = this._hashApiKey(apiKey)
+
+      // 通过哈希值直接查找API Key（性能优化）
+      const keyData = await redis.findApiKeyByHash(hashedKey)
+
+      if (!keyData) {
+        return { valid: false, error: 'API key not found' }
+      }
+
+      // 检查是否激活
+      if (keyData.isActive !== 'true') {
+        return { valid: false, error: 'API key is disabled' }
+      }
+
+      // 注意：这里不处理激活逻辑，保持 API Key 的未激活状态
+
+      // 检查是否过期（仅对已激活的 Key 检查）
+      if (
+        keyData.isActivated === 'true' &&
+        keyData.expiresAt &&
+        new Date() > new Date(keyData.expiresAt)
+      ) {
+        return { valid: false, error: 'API key has expired' }
+      }
+
+      // 如果API Key属于某个用户，检查用户是否被禁用
+      if (keyData.userId) {
+        try {
+          const userService = require('./userService')
+          const user = await userService.getUserById(keyData.userId, false)
+          if (!user || !user.isActive) {
+            return { valid: false, error: 'User account is disabled' }
+          }
+        } catch (userError) {
+          // 如果用户服务出错，记录但不影响API Key验证
+          logger.warn(`Failed to check user status for API key ${keyData.id}:`, userError)
+        }
+      }
+
+      // 获取当日费用
+      const dailyCost = (await redis.getDailyCost(keyData.id)) || 0
+
+      // 获取使用统计
+      const usage = await redis.getUsageStats(keyData.id)
+
+      // 解析限制模型数据
+      let restrictedModels = []
+      try {
+        restrictedModels = keyData.restrictedModels ? JSON.parse(keyData.restrictedModels) : []
+      } catch (e) {
+        restrictedModels = []
+      }
+
+      // 解析允许的客户端
+      let allowedClients = []
+      try {
+        allowedClients = keyData.allowedClients ? JSON.parse(keyData.allowedClients) : []
+      } catch (e) {
+        allowedClients = []
+      }
+
+      // 解析标签
+      let tags = []
+      try {
+        tags = keyData.tags ? JSON.parse(keyData.tags) : []
+      } catch (e) {
+        tags = []
+      }
+
+      return {
+        valid: true,
+        keyData: {
+          id: keyData.id,
+          name: keyData.name,
+          description: keyData.description,
+          createdAt: keyData.createdAt,
+          expiresAt: keyData.expiresAt,
+          // 添加激活相关字段
+          expirationMode: keyData.expirationMode || 'fixed',
+          isActivated: keyData.isActivated === 'true',
+          activationDays: parseInt(keyData.activationDays || 0),
+          activatedAt: keyData.activatedAt || null,
+          claudeAccountId: keyData.claudeAccountId,
+          claudeConsoleAccountId: keyData.claudeConsoleAccountId,
+          geminiAccountId: keyData.geminiAccountId,
+          openaiAccountId: keyData.openaiAccountId,
+          azureOpenaiAccountId: keyData.azureOpenaiAccountId,
+          bedrockAccountId: keyData.bedrockAccountId,
+          permissions: keyData.permissions || 'all',
+          tokenLimit: parseInt(keyData.tokenLimit),
+          concurrencyLimit: parseInt(keyData.concurrencyLimit || 0),
+          rateLimitWindow: parseInt(keyData.rateLimitWindow || 0),
+          rateLimitRequests: parseInt(keyData.rateLimitRequests || 0),
+          rateLimitCost: parseFloat(keyData.rateLimitCost || 0),
+          enableModelRestriction: keyData.enableModelRestriction === 'true',
+          restrictedModels,
+          enableClientRestriction: keyData.enableClientRestriction === 'true',
+          allowedClients,
+          dailyCostLimit: parseFloat(keyData.dailyCostLimit || 0),
+          weeklyOpusCostLimit: parseFloat(keyData.weeklyOpusCostLimit || 0),
+          dailyCost: dailyCost || 0,
+          weeklyOpusCost: (await redis.getWeeklyOpusCost(keyData.id)) || 0,
+          tags,
+          usage
+        }
+      }
+    } catch (error) {
+      logger.error('❌ API key validation error (stats):', error)
+      return { valid: false, error: 'Internal validation error' }
+    }
+  }
+
   // 📋 获取所有API Keys
   async getAllApiKeys(includeDeleted = false) {
     try {
@@ -261,6 +414,10 @@ class ApiKeyService {
         key.weeklyOpusCostLimit = parseFloat(key.weeklyOpusCostLimit || 0)
         key.dailyCost = (await redis.getDailyCost(key.id)) || 0
         key.weeklyOpusCost = (await redis.getWeeklyOpusCost(key.id)) || 0
+        key.activationDays = parseInt(key.activationDays || 0)
+        key.expirationMode = key.expirationMode || 'fixed'
+        key.isActivated = key.isActivated === 'true'
+        key.activatedAt = key.activatedAt || null
 
         // 获取当前时间窗口的请求次数、Token使用量和费用
         if (key.rateLimitWindow > 0) {
@@ -326,6 +483,10 @@ class ApiKeyService {
         } catch (e) {
           key.tags = []
         }
+        // 不暴露已弃用字段
+        if (Object.prototype.hasOwnProperty.call(key, 'ccrAccountId')) {
+          delete key.ccrAccountId
+        }
         delete key.apiKey // 不返回哈希后的key
       }
 
@@ -362,6 +523,10 @@ class ApiKeyService {
         'bedrockAccountId', // 添加 Bedrock 账号ID
         'permissions',
         'expiresAt',
+        'activationDays', // 新增：激活后有效天数
+        'expirationMode', // 新增：过期模式
+        'isActivated', // 新增：是否已激活
+        'activatedAt', // 新增：激活时间
         'enableModelRestriction',
         'restrictedModels',
         'enableClientRestriction',
@@ -380,9 +545,16 @@ class ApiKeyService {
           if (field === 'restrictedModels' || field === 'allowedClients' || field === 'tags') {
             // 特殊处理数组字段
             updatedData[field] = JSON.stringify(value || [])
-          } else if (field === 'enableModelRestriction' || field === 'enableClientRestriction') {
+          } else if (
+            field === 'enableModelRestriction' ||
+            field === 'enableClientRestriction' ||
+            field === 'isActivated'
+          ) {
             // 布尔值转字符串
             updatedData[field] = String(value)
+          } else if (field === 'expiresAt' || field === 'activatedAt') {
+            // 日期字段保持原样，不要toString()
+            updatedData[field] = value || ''
           } else {
             updatedData[field] = (value !== null && value !== undefined ? value : '').toString()
           }
@@ -678,8 +850,11 @@ class ApiKeyService {
         return // 不是 Opus 模型，直接返回
       }
 
-      // 判断是否为 claude 或 claude-console 账户
-      if (!accountType || (accountType !== 'claude' && accountType !== 'claude-console')) {
+      // 判断是否为 claude、claude-console 或 ccr 账户
+      if (
+        !accountType ||
+        (accountType !== 'claude' && accountType !== 'claude-console' && accountType !== 'ccr')
+      ) {
         logger.debug(`⚠️ Skipping Opus cost recording for non-Claude account type: ${accountType}`)
         return // 不是 claude 账户，直接返回
       }

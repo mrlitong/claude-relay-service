@@ -3,8 +3,10 @@ const apiKeyService = require('../services/apiKeyService')
 const claudeAccountService = require('../services/claudeAccountService')
 const claudeConsoleAccountService = require('../services/claudeConsoleAccountService')
 const bedrockAccountService = require('../services/bedrockAccountService')
+const ccrAccountService = require('../services/ccrAccountService')
 const geminiAccountService = require('../services/geminiAccountService')
 const openaiAccountService = require('../services/openaiAccountService')
+const openaiResponsesAccountService = require('../services/openaiResponsesAccountService')
 const azureOpenaiAccountService = require('../services/azureOpenaiAccountService')
 const accountGroupService = require('../services/accountGroupService')
 const redis = require('../models/redis')
@@ -122,7 +124,7 @@ router.get('/api-keys/:keyId/cost-debug', authenticateAdmin, async (req, res) =>
 // 获取所有API Keys
 router.get('/api-keys', authenticateAdmin, async (req, res) => {
   try {
-    const { timeRange = 'all' } = req.query // all, 7days, monthly
+    const { timeRange = 'all', startDate, endDate } = req.query // all, 7days, monthly, custom
     const apiKeys = await apiKeyService.getAllApiKeys()
 
     // 获取用户服务来补充owner信息
@@ -132,7 +134,32 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
     const now = new Date()
     const searchPatterns = []
 
-    if (timeRange === 'today') {
+    if (timeRange === 'custom' && startDate && endDate) {
+      // 自定义日期范围
+      const redisClient = require('../models/redis')
+      const start = new Date(startDate)
+      const end = new Date(endDate)
+
+      // 确保日期范围有效
+      if (start > end) {
+        return res.status(400).json({ error: 'Start date must be before or equal to end date' })
+      }
+
+      // 限制最大范围为365天
+      const daysDiff = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1
+      if (daysDiff > 365) {
+        return res.status(400).json({ error: 'Date range cannot exceed 365 days' })
+      }
+
+      // 生成日期范围内每天的搜索模式
+      const currentDate = new Date(start)
+      while (currentDate <= end) {
+        const tzDate = redisClient.getDateInTimezone(currentDate)
+        const dateStr = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tzDate.getUTCDate()).padStart(2, '0')}`
+        searchPatterns.push(`usage:daily:*:${dateStr}`)
+        currentDate.setDate(currentDate.getDate() + 1)
+      }
+    } else if (timeRange === 'today') {
       // 今日 - 使用时区日期
       const redisClient = require('../models/redis')
       const tzDate = redisClient.getDateInTimezone(now)
@@ -233,7 +260,7 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
           apiKey.usage.total.formattedCost = CostCalculator.formatCost(totalCost)
         }
       } else {
-        // 7天或本月：重新计算统计数据
+        // 7天、本月或自定义日期范围：重新计算统计数据
         const tempUsage = {
           requests: 0,
           tokens: 0,
@@ -274,12 +301,28 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
         const tzDate = redisClient.getDateInTimezone(now)
         const tzMonth = `${tzDate.getUTCFullYear()}-${String(tzDate.getUTCMonth() + 1).padStart(2, '0')}`
 
-        const modelKeys =
-          timeRange === 'today'
-            ? await client.keys(`usage:${apiKey.id}:model:daily:*:${tzToday}`)
-            : timeRange === '7days'
-              ? await client.keys(`usage:${apiKey.id}:model:daily:*:*`)
-              : await client.keys(`usage:${apiKey.id}:model:monthly:*:${tzMonth}`)
+        let modelKeys = []
+        if (timeRange === 'custom' && startDate && endDate) {
+          // 自定义日期范围：获取范围内所有日期的模型统计
+          const start = new Date(startDate)
+          const end = new Date(endDate)
+          const currentDate = new Date(start)
+
+          while (currentDate <= end) {
+            const tzDateForKey = redisClient.getDateInTimezone(currentDate)
+            const dateStr = `${tzDateForKey.getUTCFullYear()}-${String(tzDateForKey.getUTCMonth() + 1).padStart(2, '0')}-${String(tzDateForKey.getUTCDate()).padStart(2, '0')}`
+            const dayKeys = await client.keys(`usage:${apiKey.id}:model:daily:*:${dateStr}`)
+            modelKeys = modelKeys.concat(dayKeys)
+            currentDate.setDate(currentDate.getDate() + 1)
+          }
+        } else {
+          modelKeys =
+            timeRange === 'today'
+              ? await client.keys(`usage:${apiKey.id}:model:daily:*:${tzToday}`)
+              : timeRange === '7days'
+                ? await client.keys(`usage:${apiKey.id}:model:daily:*:*`)
+                : await client.keys(`usage:${apiKey.id}:model:monthly:*:${tzMonth}`)
+        }
 
         const modelStatsMap = new Map()
 
@@ -295,8 +338,8 @@ router.get('/api-keys', authenticateAdmin, async (req, res) => {
                 continue
               }
             }
-          } else if (timeRange === 'today') {
-            // today选项已经在查询时过滤了，不需要额外处理
+          } else if (timeRange === 'today' || timeRange === 'custom') {
+            // today和custom选项已经在查询时过滤了，不需要额外处理
           }
 
           const modelMatch = key.match(
@@ -491,7 +534,10 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       allowedClients,
       dailyCostLimit,
       weeklyOpusCostLimit,
-      tags
+      tags,
+      activationDays, // 新增：激活后有效天数
+      expirationMode, // 新增：过期模式
+      icon // 新增：图标
     } = req.body
 
     // 输入验证
@@ -569,6 +615,31 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       return res.status(400).json({ error: 'All tags must be non-empty strings' })
     }
 
+    // 验证激活相关字段
+    if (expirationMode && !['fixed', 'activation'].includes(expirationMode)) {
+      return res
+        .status(400)
+        .json({ error: 'Expiration mode must be either "fixed" or "activation"' })
+    }
+
+    if (expirationMode === 'activation') {
+      if (
+        !activationDays ||
+        !Number.isInteger(Number(activationDays)) ||
+        Number(activationDays) < 1
+      ) {
+        return res
+          .status(400)
+          .json({ error: 'Activation days must be a positive integer when using activation mode' })
+      }
+      // 激活模式下不应该设置固定过期时间
+      if (expiresAt) {
+        return res
+          .status(400)
+          .json({ error: 'Cannot set fixed expiration date when using activation mode' })
+      }
+    }
+
     const newKey = await apiKeyService.generateApiKey({
       name,
       description,
@@ -590,7 +661,10 @@ router.post('/api-keys', authenticateAdmin, async (req, res) => {
       allowedClients,
       dailyCostLimit,
       weeklyOpusCostLimit,
-      tags
+      tags,
+      activationDays,
+      expirationMode,
+      icon
     })
 
     logger.success(`🔑 Admin created new API key: ${name}`)
@@ -624,7 +698,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
       allowedClients,
       dailyCostLimit,
       weeklyOpusCostLimit,
-      tags
+      tags,
+      activationDays,
+      expirationMode,
+      icon
     } = req.body
 
     // 输入验证
@@ -668,7 +745,10 @@ router.post('/api-keys/batch', authenticateAdmin, async (req, res) => {
           allowedClients,
           dailyCostLimit,
           weeklyOpusCostLimit,
-          tags
+          tags,
+          activationDays,
+          expirationMode,
+          icon
         })
 
         // 保留原始 API Key 供返回
@@ -1139,6 +1219,85 @@ router.put('/api-keys/:keyId', authenticateAdmin, async (req, res) => {
   } catch (error) {
     logger.error('❌ Failed to update API key:', error)
     return res.status(500).json({ error: 'Failed to update API key', message: error.message })
+  }
+})
+
+// 修改API Key过期时间（包括手动激活功能）
+router.patch('/api-keys/:keyId/expiration', authenticateAdmin, async (req, res) => {
+  try {
+    const { keyId } = req.params
+    const { expiresAt, activateNow } = req.body
+
+    // 获取当前API Key信息
+    const keyData = await redis.getApiKey(keyId)
+    if (!keyData || Object.keys(keyData).length === 0) {
+      return res.status(404).json({ error: 'API key not found' })
+    }
+
+    const updates = {}
+
+    // 如果是激活操作（用于未激活的key）
+    if (activateNow === true) {
+      if (keyData.expirationMode === 'activation' && keyData.isActivated !== 'true') {
+        const now = new Date()
+        const activationDays = parseInt(keyData.activationDays || 30)
+        const newExpiresAt = new Date(now.getTime() + activationDays * 24 * 60 * 60 * 1000)
+
+        updates.isActivated = 'true'
+        updates.activatedAt = now.toISOString()
+        updates.expiresAt = newExpiresAt.toISOString()
+
+        logger.success(
+          `🔓 API key manually activated by admin: ${keyId} (${keyData.name}), expires at ${newExpiresAt.toISOString()}`
+        )
+      } else {
+        return res.status(400).json({
+          error: 'Cannot activate',
+          message: 'Key is either already activated or not in activation mode'
+        })
+      }
+    }
+
+    // 如果提供了新的过期时间（但不是激活操作）
+    if (expiresAt !== undefined && activateNow !== true) {
+      // 验证过期时间格式
+      if (expiresAt && isNaN(Date.parse(expiresAt))) {
+        return res.status(400).json({ error: 'Invalid expiration date format' })
+      }
+
+      // 如果设置了过期时间，确保key是激活状态
+      if (expiresAt) {
+        updates.expiresAt = new Date(expiresAt).toISOString()
+        // 如果之前是未激活状态，现在激活它
+        if (keyData.isActivated !== 'true') {
+          updates.isActivated = 'true'
+          updates.activatedAt = new Date().toISOString()
+        }
+      } else {
+        // 清除过期时间（永不过期）
+        updates.expiresAt = ''
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'No valid updates provided' })
+    }
+
+    // 更新API Key
+    await apiKeyService.updateApiKey(keyId, updates)
+
+    logger.success(`📝 Updated API key expiration: ${keyId} (${keyData.name})`)
+    return res.json({
+      success: true,
+      message: 'API key expiration updated successfully',
+      updates
+    })
+  } catch (error) {
+    logger.error('❌ Failed to update API key expiration:', error)
+    return res.status(500).json({
+      error: 'Failed to update API key expiration',
+      message: error.message
+    })
   }
 })
 
@@ -1789,7 +1948,7 @@ router.get('/claude-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
 
           // 获取会话窗口使用统计（仅对有活跃窗口的账户）
@@ -1902,7 +2061,10 @@ router.post('/claude-accounts', authenticateAdmin, async (req, res) => {
       priority,
       groupId,
       groupIds,
-      autoStopOnWarning
+      autoStopOnWarning,
+      useUnifiedUserAgent,
+      useUnifiedClientId,
+      unifiedClientId
     } = req.body
 
     if (!name) {
@@ -1942,7 +2104,10 @@ router.post('/claude-accounts', authenticateAdmin, async (req, res) => {
       accountType: accountType || 'shared', // 默认为共享类型
       platform,
       priority: priority || 50, // 默认优先级为50
-      autoStopOnWarning: autoStopOnWarning === true // 默认为false
+      autoStopOnWarning: autoStopOnWarning === true, // 默认为false
+      useUnifiedUserAgent: useUnifiedUserAgent === true, // 默认为false
+      useUnifiedClientId: useUnifiedClientId === true, // 默认为false
+      unifiedClientId: unifiedClientId || '' // 统一的客户端标识
     })
 
     // 如果是分组类型，将账户添加到分组
@@ -2218,7 +2383,7 @@ router.get('/claude-console-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
 
           return {
@@ -2292,7 +2457,9 @@ router.post('/claude-console-accounts', authenticateAdmin, async (req, res) => {
       rateLimitDuration,
       proxy,
       accountType,
-      groupId
+      groupId,
+      dailyQuota,
+      quotaResetTime
     } = req.body
 
     if (!name || !apiUrl || !apiKey) {
@@ -2327,12 +2494,14 @@ router.post('/claude-console-accounts', authenticateAdmin, async (req, res) => {
       rateLimitDuration:
         rateLimitDuration !== undefined && rateLimitDuration !== null ? rateLimitDuration : 60,
       proxy,
-      accountType: accountType || 'shared'
+      accountType: accountType || 'shared',
+      dailyQuota: dailyQuota || 0,
+      quotaResetTime: quotaResetTime || '00:00'
     })
 
-    // 如果是分组类型，将账户添加到分组
+    // 如果是分组类型，将账户添加到分组（CCR 归属 Claude 平台分组）
     if (accountType === 'group' && groupId) {
-      await accountGroupService.addAccountToGroup(newAccount.id, groupId)
+      await accountGroupService.addAccountToGroup(newAccount.id, groupId, 'claude')
     }
 
     logger.success(`🎮 Admin created Claude Console account: ${name}`)
@@ -2506,6 +2675,449 @@ router.put(
   }
 )
 
+// 获取Claude Console账户的使用统计
+router.get('/claude-console-accounts/:accountId/usage', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const usageStats = await claudeConsoleAccountService.getAccountUsageStats(accountId)
+
+    if (!usageStats) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    return res.json(usageStats)
+  } catch (error) {
+    logger.error('❌ Failed to get Claude Console account usage stats:', error)
+    return res.status(500).json({ error: 'Failed to get usage stats', message: error.message })
+  }
+})
+
+// 手动重置Claude Console账户的每日使用量
+router.post(
+  '/claude-console-accounts/:accountId/reset-usage',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const { accountId } = req.params
+      await claudeConsoleAccountService.resetDailyUsage(accountId)
+
+      logger.success(`✅ Admin manually reset daily usage for Claude Console account: ${accountId}`)
+      return res.json({ success: true, message: 'Daily usage reset successfully' })
+    } catch (error) {
+      logger.error('❌ Failed to reset Claude Console account daily usage:', error)
+      return res.status(500).json({ error: 'Failed to reset daily usage', message: error.message })
+    }
+  }
+)
+
+// 重置Claude Console账户状态（清除所有异常状态）
+router.post(
+  '/claude-console-accounts/:accountId/reset-status',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const { accountId } = req.params
+      const result = await claudeConsoleAccountService.resetAccountStatus(accountId)
+      logger.success(`✅ Admin reset status for Claude Console account: ${accountId}`)
+      return res.json({ success: true, data: result })
+    } catch (error) {
+      logger.error('❌ Failed to reset Claude Console account status:', error)
+      return res.status(500).json({ error: 'Failed to reset status', message: error.message })
+    }
+  }
+)
+
+// 手动重置所有Claude Console账户的每日使用量
+router.post('/claude-console-accounts/reset-all-usage', authenticateAdmin, async (req, res) => {
+  try {
+    await claudeConsoleAccountService.resetAllDailyUsage()
+
+    logger.success('✅ Admin manually reset daily usage for all Claude Console accounts')
+    return res.json({ success: true, message: 'All daily usage reset successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to reset all Claude Console accounts daily usage:', error)
+    return res
+      .status(500)
+      .json({ error: 'Failed to reset all daily usage', message: error.message })
+  }
+})
+
+// 🔧 CCR 账户管理
+
+// 获取所有CCR账户
+router.get('/ccr-accounts', authenticateAdmin, async (req, res) => {
+  try {
+    const { platform, groupId } = req.query
+    let accounts = await ccrAccountService.getAllAccounts()
+
+    // 根据查询参数进行筛选
+    if (platform && platform !== 'all' && platform !== 'ccr') {
+      // 如果指定了其他平台，返回空数组
+      accounts = []
+    }
+
+    // 如果指定了分组筛选
+    if (groupId && groupId !== 'all') {
+      if (groupId === 'ungrouped') {
+        // 筛选未分组账户
+        const filteredAccounts = []
+        for (const account of accounts) {
+          const groups = await accountGroupService.getAccountGroups(account.id)
+          if (!groups || groups.length === 0) {
+            filteredAccounts.push(account)
+          }
+        }
+        accounts = filteredAccounts
+      } else {
+        // 筛选特定分组的账户
+        const groupMembers = await accountGroupService.getGroupMembers(groupId)
+        accounts = accounts.filter((account) => groupMembers.includes(account.id))
+      }
+    }
+
+    // 为每个账户添加使用统计信息
+    const accountsWithStats = await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          const usageStats = await redis.getAccountUsageStats(account.id)
+          const groupInfos = await accountGroupService.getAccountGroups(account.id)
+
+          return {
+            ...account,
+            // 转换schedulable为布尔值
+            schedulable: account.schedulable === 'true' || account.schedulable === true,
+            groupInfos,
+            usage: {
+              daily: usageStats.daily,
+              total: usageStats.total,
+              averages: usageStats.averages
+            }
+          }
+        } catch (statsError) {
+          logger.warn(
+            `⚠️ Failed to get usage stats for CCR account ${account.id}:`,
+            statsError.message
+          )
+          try {
+            const groupInfos = await accountGroupService.getAccountGroups(account.id)
+            return {
+              ...account,
+              // 转换schedulable为布尔值
+              schedulable: account.schedulable === 'true' || account.schedulable === true,
+              groupInfos,
+              usage: {
+                daily: { tokens: 0, requests: 0, allTokens: 0 },
+                total: { tokens: 0, requests: 0, allTokens: 0 },
+                averages: { rpm: 0, tpm: 0 }
+              }
+            }
+          } catch (groupError) {
+            logger.warn(
+              `⚠️ Failed to get group info for CCR account ${account.id}:`,
+              groupError.message
+            )
+            return {
+              ...account,
+              groupInfos: [],
+              usage: {
+                daily: { tokens: 0, requests: 0, allTokens: 0 },
+                total: { tokens: 0, requests: 0, allTokens: 0 },
+                averages: { rpm: 0, tpm: 0 }
+              }
+            }
+          }
+        }
+      })
+    )
+
+    return res.json({ success: true, data: accountsWithStats })
+  } catch (error) {
+    logger.error('❌ Failed to get CCR accounts:', error)
+    return res.status(500).json({ error: 'Failed to get CCR accounts', message: error.message })
+  }
+})
+
+// 创建新的CCR账户
+router.post('/ccr-accounts', authenticateAdmin, async (req, res) => {
+  try {
+    const {
+      name,
+      description,
+      apiUrl,
+      apiKey,
+      priority,
+      supportedModels,
+      userAgent,
+      rateLimitDuration,
+      proxy,
+      accountType,
+      groupId,
+      dailyQuota,
+      quotaResetTime
+    } = req.body
+
+    if (!name || !apiUrl || !apiKey) {
+      return res.status(400).json({ error: 'Name, API URL and API Key are required' })
+    }
+
+    // 验证priority的有效性（1-100）
+    if (priority !== undefined && (priority < 1 || priority > 100)) {
+      return res.status(400).json({ error: 'Priority must be between 1 and 100' })
+    }
+
+    // 验证accountType的有效性
+    if (accountType && !['shared', 'dedicated', 'group'].includes(accountType)) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid account type. Must be "shared", "dedicated" or "group"' })
+    }
+
+    // 如果是分组类型，验证groupId
+    if (accountType === 'group' && !groupId) {
+      return res.status(400).json({ error: 'Group ID is required for group type accounts' })
+    }
+
+    const newAccount = await ccrAccountService.createAccount({
+      name,
+      description,
+      apiUrl,
+      apiKey,
+      priority: priority || 50,
+      supportedModels: supportedModels || [],
+      userAgent,
+      rateLimitDuration:
+        rateLimitDuration !== undefined && rateLimitDuration !== null ? rateLimitDuration : 60,
+      proxy,
+      accountType: accountType || 'shared',
+      dailyQuota: dailyQuota || 0,
+      quotaResetTime: quotaResetTime || '00:00'
+    })
+
+    // 如果是分组类型，将账户添加到分组
+    if (accountType === 'group' && groupId) {
+      await accountGroupService.addAccountToGroup(newAccount.id, groupId)
+    }
+
+    logger.success(`🔧 Admin created CCR account: ${name}`)
+    return res.json({ success: true, data: newAccount })
+  } catch (error) {
+    logger.error('❌ Failed to create CCR account:', error)
+    return res.status(500).json({ error: 'Failed to create CCR account', message: error.message })
+  }
+})
+
+// 更新CCR账户
+router.put('/ccr-accounts/:accountId', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const updates = req.body
+
+    // 验证priority的有效性（1-100）
+    if (updates.priority !== undefined && (updates.priority < 1 || updates.priority > 100)) {
+      return res.status(400).json({ error: 'Priority must be between 1 and 100' })
+    }
+
+    // 验证accountType的有效性
+    if (updates.accountType && !['shared', 'dedicated', 'group'].includes(updates.accountType)) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid account type. Must be "shared", "dedicated" or "group"' })
+    }
+
+    // 如果更新为分组类型，验证groupId
+    if (updates.accountType === 'group' && !updates.groupId) {
+      return res.status(400).json({ error: 'Group ID is required for group type accounts' })
+    }
+
+    // 获取账户当前信息以处理分组变更
+    const currentAccount = await ccrAccountService.getAccount(accountId)
+    if (!currentAccount) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    // 处理分组的变更
+    if (updates.accountType !== undefined) {
+      // 如果之前是分组类型，需要从所有分组中移除
+      if (currentAccount.accountType === 'group') {
+        const oldGroups = await accountGroupService.getAccountGroups(accountId)
+        for (const oldGroup of oldGroups) {
+          await accountGroupService.removeAccountFromGroup(accountId, oldGroup.id)
+        }
+      }
+      // 如果新类型是分组，处理多分组支持
+      if (updates.accountType === 'group') {
+        if (Object.prototype.hasOwnProperty.call(updates, 'groupIds')) {
+          // 如果明确提供了 groupIds 参数（包括空数组）
+          if (updates.groupIds && updates.groupIds.length > 0) {
+            // 设置新的多分组
+            await accountGroupService.setAccountGroups(accountId, updates.groupIds, 'claude')
+          } else {
+            // groupIds 为空数组，从所有分组中移除
+            await accountGroupService.removeAccountFromAllGroups(accountId)
+          }
+        } else if (updates.groupId) {
+          // 向后兼容：仅当没有 groupIds 但有 groupId 时使用单分组逻辑
+          await accountGroupService.addAccountToGroup(accountId, updates.groupId, 'claude')
+        }
+      }
+    }
+
+    await ccrAccountService.updateAccount(accountId, updates)
+
+    logger.success(`📝 Admin updated CCR account: ${accountId}`)
+    return res.json({ success: true, message: 'CCR account updated successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to update CCR account:', error)
+    return res.status(500).json({ error: 'Failed to update CCR account', message: error.message })
+  }
+})
+
+// 删除CCR账户
+router.delete('/ccr-accounts/:accountId', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+
+    // 获取账户信息以检查是否在分组中
+    const account = await ccrAccountService.getAccount(accountId)
+    if (account && account.accountType === 'group') {
+      const groups = await accountGroupService.getAccountGroups(accountId)
+      for (const group of groups) {
+        await accountGroupService.removeAccountFromGroup(accountId, group.id)
+      }
+    }
+
+    await ccrAccountService.deleteAccount(accountId)
+
+    logger.success(`🗑️ Admin deleted CCR account: ${accountId}`)
+    return res.json({ success: true, message: 'CCR account deleted successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to delete CCR account:', error)
+    return res.status(500).json({ error: 'Failed to delete CCR account', message: error.message })
+  }
+})
+
+// 切换CCR账户状态
+router.put('/ccr-accounts/:accountId/toggle', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+
+    const account = await ccrAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const newStatus = !account.isActive
+    await ccrAccountService.updateAccount(accountId, { isActive: newStatus })
+
+    logger.success(
+      `🔄 Admin toggled CCR account status: ${accountId} -> ${newStatus ? 'active' : 'inactive'}`
+    )
+    return res.json({ success: true, isActive: newStatus })
+  } catch (error) {
+    logger.error('❌ Failed to toggle CCR account status:', error)
+    return res
+      .status(500)
+      .json({ error: 'Failed to toggle account status', message: error.message })
+  }
+})
+
+// 切换CCR账户调度状态
+router.put('/ccr-accounts/:accountId/toggle-schedulable', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+
+    const account = await ccrAccountService.getAccount(accountId)
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    const newSchedulable = !account.schedulable
+    await ccrAccountService.updateAccount(accountId, { schedulable: newSchedulable })
+
+    // 如果账号被禁用，发送webhook通知
+    if (!newSchedulable) {
+      await webhookNotifier.sendAccountAnomalyNotification({
+        accountId: account.id,
+        accountName: account.name || 'CCR Account',
+        platform: 'ccr',
+        status: 'disabled',
+        errorCode: 'CCR_MANUALLY_DISABLED',
+        reason: '账号已被管理员手动禁用调度',
+        timestamp: new Date().toISOString()
+      })
+    }
+
+    logger.success(
+      `🔄 Admin toggled CCR account schedulable status: ${accountId} -> ${newSchedulable ? 'schedulable' : 'not schedulable'}`
+    )
+    return res.json({ success: true, schedulable: newSchedulable })
+  } catch (error) {
+    logger.error('❌ Failed to toggle CCR account schedulable status:', error)
+    return res
+      .status(500)
+      .json({ error: 'Failed to toggle schedulable status', message: error.message })
+  }
+})
+
+// 获取CCR账户的使用统计
+router.get('/ccr-accounts/:accountId/usage', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const usageStats = await ccrAccountService.getAccountUsageStats(accountId)
+
+    if (!usageStats) {
+      return res.status(404).json({ error: 'Account not found' })
+    }
+
+    return res.json(usageStats)
+  } catch (error) {
+    logger.error('❌ Failed to get CCR account usage stats:', error)
+    return res.status(500).json({ error: 'Failed to get usage stats', message: error.message })
+  }
+})
+
+// 手动重置CCR账户的每日使用量
+router.post('/ccr-accounts/:accountId/reset-usage', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    await ccrAccountService.resetDailyUsage(accountId)
+
+    logger.success(`✅ Admin manually reset daily usage for CCR account: ${accountId}`)
+    return res.json({ success: true, message: 'Daily usage reset successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to reset CCR account daily usage:', error)
+    return res.status(500).json({ error: 'Failed to reset daily usage', message: error.message })
+  }
+})
+
+// 重置CCR账户状态（清除所有异常状态）
+router.post('/ccr-accounts/:accountId/reset-status', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+    const result = await ccrAccountService.resetAccountStatus(accountId)
+    logger.success(`✅ Admin reset status for CCR account: ${accountId}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    logger.error('❌ Failed to reset CCR account status:', error)
+    return res.status(500).json({ error: 'Failed to reset status', message: error.message })
+  }
+})
+
+// 手动重置所有CCR账户的每日使用量
+router.post('/ccr-accounts/reset-all-usage', authenticateAdmin, async (req, res) => {
+  try {
+    await ccrAccountService.resetAllDailyUsage()
+
+    logger.success('✅ Admin manually reset daily usage for all CCR accounts')
+    return res.json({ success: true, message: 'All daily usage reset successfully' })
+  } catch (error) {
+    logger.error('❌ Failed to reset all CCR accounts daily usage:', error)
+    return res
+      .status(500)
+      .json({ error: 'Failed to reset all daily usage', message: error.message })
+  }
+})
+
 // ☁️ Bedrock 账户管理
 
 // 获取所有Bedrock账户
@@ -2550,7 +3162,7 @@ router.get('/bedrock-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
 
           return {
@@ -3000,7 +3612,7 @@ router.get('/gemini-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
 
           return {
@@ -3331,6 +3943,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       geminiAccounts,
       bedrockAccountsResult,
       openaiAccounts,
+      ccrAccounts,
       todayStats,
       systemAverages,
       realtimeMetrics
@@ -3341,6 +3954,7 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       claudeConsoleAccountService.getAllAccounts(),
       geminiAccountService.getAllAccounts(),
       bedrockAccountService.getAllAccounts(),
+      ccrAccountService.getAllAccounts(),
       redis.getAllOpenAIAccounts(),
       redis.getTodayStats(),
       redis.getSystemAverages(),
@@ -3512,6 +4126,29 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
       (acc) => acc.rateLimitStatus && acc.rateLimitStatus.isRateLimited
     ).length
 
+    // CCR账户统计
+    const normalCcrAccounts = ccrAccounts.filter(
+      (acc) =>
+        acc.isActive &&
+        acc.status !== 'blocked' &&
+        acc.status !== 'unauthorized' &&
+        acc.schedulable !== false &&
+        !(acc.rateLimitStatus && acc.rateLimitStatus.isRateLimited)
+    ).length
+    const abnormalCcrAccounts = ccrAccounts.filter(
+      (acc) => !acc.isActive || acc.status === 'blocked' || acc.status === 'unauthorized'
+    ).length
+    const pausedCcrAccounts = ccrAccounts.filter(
+      (acc) =>
+        acc.schedulable === false &&
+        acc.isActive &&
+        acc.status !== 'blocked' &&
+        acc.status !== 'unauthorized'
+    ).length
+    const rateLimitedCcrAccounts = ccrAccounts.filter(
+      (acc) => acc.rateLimitStatus && acc.rateLimitStatus.isRateLimited
+    ).length
+
     const dashboard = {
       overview: {
         totalApiKeys: apiKeys.length,
@@ -3522,31 +4159,36 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           claudeConsoleAccounts.length +
           geminiAccounts.length +
           bedrockAccounts.length +
-          openaiAccounts.length,
+          openaiAccounts.length +
+          ccrAccounts.length,
         normalAccounts:
           normalClaudeAccounts +
           normalClaudeConsoleAccounts +
           normalGeminiAccounts +
           normalBedrockAccounts +
-          normalOpenAIAccounts,
+          normalOpenAIAccounts +
+          normalCcrAccounts,
         abnormalAccounts:
           abnormalClaudeAccounts +
           abnormalClaudeConsoleAccounts +
           abnormalGeminiAccounts +
           abnormalBedrockAccounts +
-          abnormalOpenAIAccounts,
+          abnormalOpenAIAccounts +
+          abnormalCcrAccounts,
         pausedAccounts:
           pausedClaudeAccounts +
           pausedClaudeConsoleAccounts +
           pausedGeminiAccounts +
           pausedBedrockAccounts +
-          pausedOpenAIAccounts,
+          pausedOpenAIAccounts +
+          pausedCcrAccounts,
         rateLimitedAccounts:
           rateLimitedClaudeAccounts +
           rateLimitedClaudeConsoleAccounts +
           rateLimitedGeminiAccounts +
           rateLimitedBedrockAccounts +
-          rateLimitedOpenAIAccounts,
+          rateLimitedOpenAIAccounts +
+          rateLimitedCcrAccounts,
         // 各平台详细统计
         accountsByPlatform: {
           claude: {
@@ -3583,6 +4225,13 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
             abnormal: abnormalOpenAIAccounts,
             paused: pausedOpenAIAccounts,
             rateLimited: rateLimitedOpenAIAccounts
+          },
+          ccr: {
+            total: ccrAccounts.length,
+            normal: normalCcrAccounts,
+            abnormal: abnormalCcrAccounts,
+            paused: pausedCcrAccounts,
+            rateLimited: rateLimitedCcrAccounts
           }
         },
         // 保留旧字段以兼容
@@ -3591,7 +4240,8 @@ router.get('/dashboard', authenticateAdmin, async (req, res) => {
           normalClaudeConsoleAccounts +
           normalGeminiAccounts +
           normalBedrockAccounts +
-          normalOpenAIAccounts,
+          normalOpenAIAccounts +
+          normalCcrAccounts,
         totalClaudeAccounts: claudeAccounts.length + claudeConsoleAccounts.length,
         activeClaudeAccounts: normalClaudeAccounts + normalClaudeConsoleAccounts,
         rateLimitedClaudeAccounts: rateLimitedClaudeAccounts + rateLimitedClaudeConsoleAccounts,
@@ -3689,10 +4339,10 @@ router.get('/model-stats', authenticateAdmin, async (req, res) => {
         return res.status(400).json({ error: 'Start date must be before or equal to end date' })
       }
 
-      // 限制最大范围为31天
+      // 限制最大范围为365天
       const daysDiff = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1
-      if (daysDiff > 31) {
-        return res.status(400).json({ error: 'Date range cannot exceed 31 days' })
+      if (daysDiff > 365) {
+        return res.status(400).json({ error: 'Date range cannot exceed 365 days' })
       }
 
       // 生成日期范围内所有日期的搜索模式
@@ -4153,10 +4803,10 @@ router.get('/api-keys/:keyId/model-stats', authenticateAdmin, async (req, res) =
         return res.status(400).json({ error: 'Start date must be before or equal to end date' })
       }
 
-      // 限制最大范围为31天
+      // 限制最大范围为365天
       const daysDiff = Math.ceil((end - start) / (1000 * 60 * 60 * 24)) + 1
-      if (daysDiff > 31) {
-        return res.status(400).json({ error: 'Date range cannot exceed 31 days' })
+      if (daysDiff > 365) {
+        return res.status(400).json({ error: 'Date range cannot exceed 365 days' })
       }
 
       // 生成日期范围内所有日期的搜索模式
@@ -5207,6 +5857,7 @@ router.get('/oem-settings', async (req, res) => {
       siteName: 'Claude Relay Service',
       siteIcon: '',
       siteIconData: '', // Base64编码的图标数据
+      showAdminButton: true, // 是否显示管理后台按钮
       updatedAt: new Date().toISOString()
     }
 
@@ -5236,7 +5887,7 @@ router.get('/oem-settings', async (req, res) => {
 // 更新OEM设置
 router.put('/oem-settings', authenticateAdmin, async (req, res) => {
   try {
-    const { siteName, siteIcon, siteIconData } = req.body
+    const { siteName, siteIcon, siteIconData, showAdminButton } = req.body
 
     // 验证输入
     if (!siteName || typeof siteName !== 'string' || siteName.trim().length === 0) {
@@ -5267,6 +5918,7 @@ router.put('/oem-settings', authenticateAdmin, async (req, res) => {
       siteName: siteName.trim(),
       siteIcon: (siteIcon || '').trim(),
       siteIconData: (siteIconData || '').trim(), // Base64数据
+      showAdminButton: showAdminButton !== false, // 默认为true
       updatedAt: new Date().toISOString()
     }
 
@@ -5526,7 +6178,7 @@ router.get('/openai-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           return {
             ...account,
             usage: {
@@ -5577,7 +6229,9 @@ router.post('/openai-accounts', authenticateAdmin, async (req, res) => {
       accountType,
       groupId,
       rateLimitDuration,
-      priority
+      priority,
+      needsImmediateRefresh, // 是否需要立即刷新
+      requireRefreshSuccess // 是否必须刷新成功才能创建
     } = req.body
 
     if (!name) {
@@ -5586,7 +6240,8 @@ router.post('/openai-accounts', authenticateAdmin, async (req, res) => {
         message: '账户名称不能为空'
       })
     }
-    // 创建账户数据
+
+    // 准备账户数据
     const accountData = {
       name,
       description: description || '',
@@ -5601,12 +6256,99 @@ router.post('/openai-accounts', authenticateAdmin, async (req, res) => {
       schedulable: true
     }
 
-    // 创建账户
+    // 如果需要立即刷新且必须成功（OpenAI 手动模式）
+    if (needsImmediateRefresh && requireRefreshSuccess) {
+      // 先创建临时账户以测试刷新
+      const tempAccount = await openaiAccountService.createAccount(accountData)
+
+      try {
+        logger.info(`🔄 测试刷新 OpenAI 账户以获取完整 token 信息`)
+
+        // 尝试刷新 token（会自动使用账户配置的代理）
+        await openaiAccountService.refreshAccountToken(tempAccount.id)
+
+        // 刷新成功，获取更新后的账户信息
+        const refreshedAccount = await openaiAccountService.getAccount(tempAccount.id)
+
+        // 检查是否获取到了 ID Token
+        if (!refreshedAccount.idToken || refreshedAccount.idToken === '') {
+          // 没有获取到 ID Token，删除账户
+          await openaiAccountService.deleteAccount(tempAccount.id)
+          throw new Error('无法获取 ID Token，请检查 Refresh Token 是否有效')
+        }
+
+        // 如果是分组类型，添加到分组
+        if (accountType === 'group' && groupId) {
+          await accountGroupService.addAccountToGroup(tempAccount.id, groupId, 'openai')
+        }
+
+        // 清除敏感信息后返回
+        delete refreshedAccount.idToken
+        delete refreshedAccount.accessToken
+        delete refreshedAccount.refreshToken
+
+        logger.success(`✅ 创建并验证 OpenAI 账户成功: ${name} (ID: ${tempAccount.id})`)
+
+        return res.json({
+          success: true,
+          data: refreshedAccount,
+          message: '账户创建成功，并已获取完整 token 信息'
+        })
+      } catch (refreshError) {
+        // 刷新失败，删除临时创建的账户
+        logger.warn(`❌ 刷新失败，删除临时账户: ${refreshError.message}`)
+        await openaiAccountService.deleteAccount(tempAccount.id)
+
+        // 构建详细的错误信息
+        const errorResponse = {
+          success: false,
+          message: '账户创建失败',
+          error: refreshError.message
+        }
+
+        // 添加更详细的错误信息
+        if (refreshError.status) {
+          errorResponse.errorCode = refreshError.status
+        }
+        if (refreshError.details) {
+          errorResponse.errorDetails = refreshError.details
+        }
+        if (refreshError.code) {
+          errorResponse.networkError = refreshError.code
+        }
+
+        // 提供更友好的错误提示
+        if (refreshError.message.includes('Refresh Token 无效')) {
+          errorResponse.suggestion = '请检查 Refresh Token 是否正确，或重新通过 OAuth 授权获取'
+        } else if (refreshError.message.includes('代理')) {
+          errorResponse.suggestion = '请检查代理配置是否正确，包括地址、端口和认证信息'
+        } else if (refreshError.message.includes('过于频繁')) {
+          errorResponse.suggestion = '请稍后再试，或更换代理 IP'
+        } else if (refreshError.message.includes('连接')) {
+          errorResponse.suggestion = '请检查网络连接和代理设置'
+        }
+
+        return res.status(400).json(errorResponse)
+      }
+    }
+
+    // 不需要强制刷新的情况（OAuth 模式或其他平台）
     const createdAccount = await openaiAccountService.createAccount(accountData)
 
     // 如果是分组类型，添加到分组
     if (accountType === 'group' && groupId) {
       await accountGroupService.addAccountToGroup(createdAccount.id, groupId, 'openai')
+    }
+
+    // 如果需要刷新但不强制成功（OAuth 模式可能已有完整信息）
+    if (needsImmediateRefresh && !requireRefreshSuccess) {
+      try {
+        logger.info(`🔄 尝试刷新 OpenAI 账户 ${createdAccount.id}`)
+        await openaiAccountService.refreshAccountToken(createdAccount.id)
+        logger.info(`✅ 刷新成功`)
+      } catch (refreshError) {
+        logger.warn(`⚠️ 刷新失败，但账户已创建: ${refreshError.message}`)
+      }
     }
 
     logger.success(`✅ 创建 OpenAI 账户成功: ${name} (ID: ${createdAccount.id})`)
@@ -5630,6 +6372,7 @@ router.put('/openai-accounts/:id', authenticateAdmin, async (req, res) => {
   try {
     const { id } = req.params
     const updates = req.body
+    const { needsImmediateRefresh, requireRefreshSuccess } = updates
 
     // 验证accountType的有效性
     if (updates.accountType && !['shared', 'dedicated', 'group'].includes(updates.accountType)) {
@@ -5647,6 +6390,93 @@ router.put('/openai-accounts/:id', authenticateAdmin, async (req, res) => {
     const currentAccount = await openaiAccountService.getAccount(id)
     if (!currentAccount) {
       return res.status(404).json({ error: 'Account not found' })
+    }
+
+    // 如果更新了 Refresh Token，需要验证其有效性
+    if (updates.openaiOauth?.refreshToken && needsImmediateRefresh && requireRefreshSuccess) {
+      // 先更新 token 信息
+      const tempUpdateData = {}
+      if (updates.openaiOauth.refreshToken) {
+        tempUpdateData.refreshToken = updates.openaiOauth.refreshToken
+      }
+      if (updates.openaiOauth.accessToken) {
+        tempUpdateData.accessToken = updates.openaiOauth.accessToken
+      }
+      // 更新代理配置（如果有）
+      if (updates.proxy !== undefined) {
+        tempUpdateData.proxy = updates.proxy
+      }
+
+      // 临时更新账户以测试新的 token
+      await openaiAccountService.updateAccount(id, tempUpdateData)
+
+      try {
+        logger.info(`🔄 验证更新的 OpenAI token (账户: ${id})`)
+
+        // 尝试刷新 token（会使用账户配置的代理）
+        await openaiAccountService.refreshAccountToken(id)
+
+        // 获取刷新后的账户信息
+        const refreshedAccount = await openaiAccountService.getAccount(id)
+
+        // 检查是否获取到了 ID Token
+        if (!refreshedAccount.idToken || refreshedAccount.idToken === '') {
+          // 恢复原始 token
+          await openaiAccountService.updateAccount(id, {
+            refreshToken: currentAccount.refreshToken,
+            accessToken: currentAccount.accessToken,
+            idToken: currentAccount.idToken
+          })
+
+          return res.status(400).json({
+            success: false,
+            message: '无法获取 ID Token，请检查 Refresh Token 是否有效',
+            error: 'Invalid refresh token'
+          })
+        }
+
+        logger.success(`✅ Token 验证成功，继续更新账户信息`)
+      } catch (refreshError) {
+        // 刷新失败，恢复原始 token
+        logger.warn(`❌ Token 验证失败，恢复原始配置: ${refreshError.message}`)
+        await openaiAccountService.updateAccount(id, {
+          refreshToken: currentAccount.refreshToken,
+          accessToken: currentAccount.accessToken,
+          idToken: currentAccount.idToken,
+          proxy: currentAccount.proxy
+        })
+
+        // 构建详细的错误信息
+        const errorResponse = {
+          success: false,
+          message: '更新失败',
+          error: refreshError.message
+        }
+
+        // 添加更详细的错误信息
+        if (refreshError.status) {
+          errorResponse.errorCode = refreshError.status
+        }
+        if (refreshError.details) {
+          errorResponse.errorDetails = refreshError.details
+        }
+        if (refreshError.code) {
+          errorResponse.networkError = refreshError.code
+        }
+
+        // 提供更友好的错误提示
+        if (refreshError.message.includes('Refresh Token 无效')) {
+          errorResponse.suggestion = '请检查 Refresh Token 是否正确，或重新通过 OAuth 授权获取'
+        } else if (refreshError.message.includes('代理')) {
+          errorResponse.suggestion = '请检查代理配置是否正确，包括地址、端口和认证信息'
+        } else if (refreshError.message.includes('过于频繁')) {
+          errorResponse.suggestion = '请稍后再试，或更换代理 IP'
+        } else if (refreshError.message.includes('连接')) {
+          errorResponse.suggestion = '请检查网络连接和代理设置'
+        }
+
+        return res.status(400).json(errorResponse)
+      }
     }
 
     // 处理分组的变更
@@ -5670,9 +6500,7 @@ router.put('/openai-accounts/:id', authenticateAdmin, async (req, res) => {
     // 处理敏感数据加密
     if (updates.openaiOauth) {
       updateData.openaiOauth = updates.openaiOauth
-      if (updates.openaiOauth.idToken) {
-        updateData.idToken = updates.openaiOauth.idToken
-      }
+      // 编辑时不允许直接输入 ID Token，只能通过刷新获取
       if (updates.openaiOauth.accessToken) {
         updateData.accessToken = updates.openaiOauth.accessToken
       }
@@ -5705,6 +6533,17 @@ router.put('/openai-accounts/:id', authenticateAdmin, async (req, res) => {
     }
 
     const updatedAccount = await openaiAccountService.updateAccount(id, updateData)
+
+    // 如果需要刷新但不强制成功（非关键更新）
+    if (needsImmediateRefresh && !requireRefreshSuccess) {
+      try {
+        logger.info(`🔄 尝试刷新 OpenAI 账户 ${id}`)
+        await openaiAccountService.refreshAccountToken(id)
+        logger.info(`✅ 刷新成功`)
+      } catch (refreshError) {
+        logger.warn(`⚠️ 刷新失败，但账户信息已更新: ${refreshError.message}`)
+      }
+    }
 
     logger.success(`📝 Admin updated OpenAI account: ${id}`)
     return res.json({ success: true, data: updatedAccount })
@@ -5791,6 +6630,21 @@ router.put('/openai-accounts/:id/toggle', authenticateAdmin, async (req, res) =>
   }
 })
 
+// 重置 OpenAI 账户状态（清除所有异常状态）
+router.post('/openai-accounts/:accountId/reset-status', authenticateAdmin, async (req, res) => {
+  try {
+    const { accountId } = req.params
+
+    const result = await openaiAccountService.resetAccountStatus(accountId)
+
+    logger.success(`✅ Admin reset status for OpenAI account: ${accountId}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    logger.error('❌ Failed to reset OpenAI account status:', error)
+    return res.status(500).json({ error: 'Failed to reset status', message: error.message })
+  }
+})
+
 // 切换 OpenAI 账户调度状态
 router.put(
   '/openai-accounts/:accountId/toggle-schedulable',
@@ -5871,7 +6725,7 @@ router.get('/azure-openai-accounts', authenticateAdmin, async (req, res) => {
     const accountsWithStats = await Promise.all(
       accounts.map(async (account) => {
         try {
-          const usageStats = await redis.getAccountUsageStats(account.id)
+          const usageStats = await redis.getAccountUsageStats(account.id, 'openai')
           const groupInfos = await accountGroupService.getAccountGroups(account.id)
           return {
             ...account,
@@ -6266,6 +7120,336 @@ router.post('/claude-code-version/clear', authenticateAdmin, async (req, res) =>
     res.status(500).json({
       success: false,
       message: 'Failed to clear cache',
+      error: error.message
+    })
+  }
+})
+
+// ==================== OpenAI-Responses 账户管理 API ====================
+
+// 获取所有 OpenAI-Responses 账户
+router.get('/openai-responses-accounts', authenticateAdmin, async (req, res) => {
+  try {
+    const { platform, groupId } = req.query
+    let accounts = await openaiResponsesAccountService.getAllAccounts(true)
+
+    // 根据查询参数进行筛选
+    if (platform && platform !== 'openai-responses') {
+      accounts = []
+    }
+
+    // 根据分组ID筛选
+    if (groupId) {
+      const group = await accountGroupService.getGroup(groupId)
+      if (group && group.platform === 'openai' && group.memberIds && group.memberIds.length > 0) {
+        accounts = accounts.filter((account) => group.memberIds.includes(account.id))
+      } else {
+        accounts = []
+      }
+    }
+
+    // 处理额度信息、使用统计和绑定的 API Key 数量
+    const accountsWithStats = await Promise.all(
+      accounts.map(async (account) => {
+        try {
+          // 检查是否需要重置额度
+          const today = redis.getDateStringInTimezone()
+          if (account.lastResetDate !== today) {
+            // 今天还没重置过，需要重置
+            await openaiResponsesAccountService.updateAccount(account.id, {
+              dailyUsage: '0',
+              lastResetDate: today,
+              quotaStoppedAt: ''
+            })
+            account.dailyUsage = '0'
+            account.lastResetDate = today
+            account.quotaStoppedAt = ''
+          }
+
+          // 检查并清除过期的限流状态
+          await openaiResponsesAccountService.checkAndClearRateLimit(account.id)
+
+          // 获取使用统计信息
+          let usageStats
+          try {
+            usageStats = await redis.getAccountUsageStats(account.id, 'openai-responses')
+          } catch (error) {
+            logger.debug(
+              `Failed to get usage stats for OpenAI-Responses account ${account.id}:`,
+              error
+            )
+            usageStats = {
+              daily: { requests: 0, tokens: 0, allTokens: 0 },
+              total: { requests: 0, tokens: 0, allTokens: 0 },
+              monthly: { requests: 0, tokens: 0, allTokens: 0 }
+            }
+          }
+
+          // 计算绑定的API Key数量（支持 responses: 前缀）
+          const allKeys = await redis.getAllApiKeys()
+          let boundCount = 0
+
+          for (const key of allKeys) {
+            // 检查是否绑定了该账户（包括 responses: 前缀）
+            if (
+              key.openaiAccountId === account.id ||
+              key.openaiAccountId === `responses:${account.id}`
+            ) {
+              boundCount++
+            }
+          }
+
+          // 调试日志：检查绑定计数
+          if (boundCount > 0) {
+            logger.info(`OpenAI-Responses account ${account.id} has ${boundCount} bound API keys`)
+          }
+
+          return {
+            ...account,
+            boundApiKeysCount: boundCount,
+            usage: {
+              daily: usageStats.daily,
+              total: usageStats.total,
+              monthly: usageStats.monthly
+            }
+          }
+        } catch (error) {
+          logger.error(`Failed to process OpenAI-Responses account ${account.id}:`, error)
+          return {
+            ...account,
+            boundApiKeysCount: 0,
+            usage: {
+              daily: { requests: 0, tokens: 0, allTokens: 0 },
+              total: { requests: 0, tokens: 0, allTokens: 0 },
+              monthly: { requests: 0, tokens: 0, allTokens: 0 }
+            }
+          }
+        }
+      })
+    )
+
+    res.json({ success: true, data: accountsWithStats })
+  } catch (error) {
+    logger.error('Failed to get OpenAI-Responses accounts:', error)
+    res.status(500).json({ success: false, message: error.message })
+  }
+})
+
+// 创建 OpenAI-Responses 账户
+router.post('/openai-responses-accounts', authenticateAdmin, async (req, res) => {
+  try {
+    const account = await openaiResponsesAccountService.createAccount(req.body)
+    res.json({ success: true, account })
+  } catch (error) {
+    logger.error('Failed to create OpenAI-Responses account:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// 更新 OpenAI-Responses 账户
+router.put('/openai-responses-accounts/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+    const updates = req.body
+
+    // 验证priority的有效性（1-100）
+    if (updates.priority !== undefined) {
+      const priority = parseInt(updates.priority)
+      if (isNaN(priority) || priority < 1 || priority > 100) {
+        return res.status(400).json({
+          success: false,
+          message: 'Priority must be a number between 1 and 100'
+        })
+      }
+      updates.priority = priority.toString()
+    }
+
+    const result = await openaiResponsesAccountService.updateAccount(id, updates)
+
+    if (!result.success) {
+      return res.status(400).json(result)
+    }
+
+    res.json({ success: true, ...result })
+  } catch (error) {
+    logger.error('Failed to update OpenAI-Responses account:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// 删除 OpenAI-Responses 账户
+router.delete('/openai-responses-accounts/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const account = await openaiResponsesAccountService.getAccount(id)
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: 'Account not found'
+      })
+    }
+
+    // 检查是否在分组中
+    const groups = await accountGroupService.getAllGroups()
+    for (const group of groups) {
+      if (group.platform === 'openai' && group.memberIds && group.memberIds.includes(id)) {
+        await accountGroupService.removeMemberFromGroup(group.id, id)
+        logger.info(`Removed OpenAI-Responses account ${id} from group ${group.id}`)
+      }
+    }
+
+    const result = await openaiResponsesAccountService.deleteAccount(id)
+    res.json({ success: true, ...result })
+  } catch (error) {
+    logger.error('Failed to delete OpenAI-Responses account:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// 切换 OpenAI-Responses 账户调度状态
+router.put(
+  '/openai-responses-accounts/:id/toggle-schedulable',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params
+
+      const result = await openaiResponsesAccountService.toggleSchedulable(id)
+
+      if (!result.success) {
+        return res.status(400).json(result)
+      }
+
+      // 仅在停止调度时发送通知
+      if (!result.schedulable) {
+        await webhookNotifier.sendAccountEvent('account.status_changed', {
+          accountId: id,
+          platform: 'openai-responses',
+          schedulable: result.schedulable,
+          changedBy: 'admin',
+          action: 'stopped_scheduling'
+        })
+      }
+
+      res.json(result)
+    } catch (error) {
+      logger.error('Failed to toggle OpenAI-Responses account schedulable status:', error)
+      res.status(500).json({
+        success: false,
+        error: error.message
+      })
+    }
+  }
+)
+
+// 切换 OpenAI-Responses 账户激活状态
+router.put('/openai-responses-accounts/:id/toggle', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const account = await openaiResponsesAccountService.getAccount(id)
+    if (!account) {
+      return res.status(404).json({
+        success: false,
+        message: 'Account not found'
+      })
+    }
+
+    const newActiveStatus = account.isActive === 'true' ? 'false' : 'true'
+    await openaiResponsesAccountService.updateAccount(id, {
+      isActive: newActiveStatus
+    })
+
+    res.json({
+      success: true,
+      isActive: newActiveStatus === 'true'
+    })
+  } catch (error) {
+    logger.error('Failed to toggle OpenAI-Responses account status:', error)
+    res.status(500).json({
+      success: false,
+      error: error.message
+    })
+  }
+})
+
+// 重置 OpenAI-Responses 账户限流状态
+router.post(
+  '/openai-responses-accounts/:id/reset-rate-limit',
+  authenticateAdmin,
+  async (req, res) => {
+    try {
+      const { id } = req.params
+
+      await openaiResponsesAccountService.updateAccount(id, {
+        rateLimitedAt: '',
+        rateLimitStatus: '',
+        status: 'active',
+        errorMessage: ''
+      })
+
+      logger.info(`🔄 Admin manually reset rate limit for OpenAI-Responses account ${id}`)
+
+      res.json({
+        success: true,
+        message: 'Rate limit reset successfully'
+      })
+    } catch (error) {
+      logger.error('Failed to reset OpenAI-Responses account rate limit:', error)
+      res.status(500).json({
+        success: false,
+        error: error.message
+      })
+    }
+  }
+)
+
+// 重置 OpenAI-Responses 账户状态（清除所有异常状态）
+router.post('/openai-responses-accounts/:id/reset-status', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    const result = await openaiResponsesAccountService.resetAccountStatus(id)
+
+    logger.success(`✅ Admin reset status for OpenAI-Responses account: ${id}`)
+    return res.json({ success: true, data: result })
+  } catch (error) {
+    logger.error('❌ Failed to reset OpenAI-Responses account status:', error)
+    return res.status(500).json({ error: 'Failed to reset status', message: error.message })
+  }
+})
+
+// 手动重置 OpenAI-Responses 账户的每日使用量
+router.post('/openai-responses-accounts/:id/reset-usage', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params
+
+    await openaiResponsesAccountService.updateAccount(id, {
+      dailyUsage: '0',
+      lastResetDate: redis.getDateStringInTimezone(),
+      quotaStoppedAt: ''
+    })
+
+    logger.success(`✅ Admin manually reset daily usage for OpenAI-Responses account ${id}`)
+
+    res.json({
+      success: true,
+      message: 'Daily usage reset successfully'
+    })
+  } catch (error) {
+    logger.error('Failed to reset OpenAI-Responses account usage:', error)
+    res.status(500).json({
+      success: false,
       error: error.message
     })
   }
