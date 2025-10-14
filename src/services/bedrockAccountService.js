@@ -149,6 +149,9 @@ class BedrockAccountService {
             credentialType: account.credentialType,
 
             // ✅ 前端显示订阅过期时间（业务字段）
+            // ✅ Bedrock 使用 AWS 认证，没有 OAuth token 过期时间
+            tokenExpiresAt: null,
+
             expiresAt: account.subscriptionExpiresAt || null,
 
             createdAt: account.createdAt,

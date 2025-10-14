@@ -64,8 +64,10 @@ function formatAccountExpiry(account) {
     return account
   }
 
-  // 保存原始的 OAuth token 过期时间
-  const tokenExpiresAt = account.expiresAt || null
+  // ✅ 优先使用服务层已经设置的 tokenExpiresAt（真正的 OAuth token 过期时间）
+  // 如果服务层没有设置（旧数据或不需要 token 的账户类型），则尝试从 expiresAt 获取
+  const tokenExpiresAt =
+    account.tokenExpiresAt !== undefined ? account.tokenExpiresAt : account.expiresAt || null
 
   // 将订阅过期时间映射到 expiresAt（前端使用）
   const subscriptionExpiresAt = account.subscriptionExpiresAt || null

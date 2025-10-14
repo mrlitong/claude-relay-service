@@ -802,6 +802,9 @@ async function getAllAccounts() {
         accessToken: maskedAccessToken,
         refreshToken: maskedRefreshToken,
 
+        // ✅ 保存原始的 OAuth token 过期时间，供路由层使用
+        tokenExpiresAt: accountData.expiresAt || null,
+
         // ✅ 前端显示订阅过期时间（业务字段）
         expiresAt: accountData.subscriptionExpiresAt || null,
 

@@ -171,6 +171,9 @@ class CcrAccountService {
             rateLimitInfo,
             schedulable: accountData.schedulable !== 'false', // 默认为true，只有明确设置为false才不可调度
 
+            // ✅ CCR 使用 API Key 认证，没有 OAuth token 过期时间
+            tokenExpiresAt: null,
+
             // ✅ 前端显示订阅过期时间（业务字段）
             expiresAt: accountData.subscriptionExpiresAt || null,
 

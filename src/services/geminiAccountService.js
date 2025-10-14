@@ -663,6 +663,9 @@ async function getAllAccounts() {
 
         // ✅ 前端显示订阅过期时间（业务字段）
         // 注意：前端看到的 expiresAt 实际上是 subscriptionExpiresAt
+        // ✅ 保存原始的 OAuth token 过期时间，供路由层使用
+        tokenExpiresAt: accountData.expiresAt || null,
+
         expiresAt: accountData.subscriptionExpiresAt || null,
 
         // 添加 scopes 字段用于判断认证方式

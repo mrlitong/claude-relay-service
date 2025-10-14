@@ -316,6 +316,9 @@ async function getAllAccounts() {
         isActive: accountData.isActive === 'true',
         schedulable: accountData.schedulable !== 'false',
 
+        // ✅ Azure OpenAI 使用 API Key 认证，没有 OAuth token 过期时间
+        tokenExpiresAt: null,
+
         // ✅ 前端显示订阅过期时间（业务字段）
         expiresAt: accountData.subscriptionExpiresAt || null,
         platform: 'azure-openai'

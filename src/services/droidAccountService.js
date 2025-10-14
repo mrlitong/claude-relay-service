@@ -886,6 +886,9 @@ class DroidAccountService {
         : '',
 
       // ✅ 前端显示订阅过期时间（业务字段）
+      // ✅ 保存原始的 OAuth token 过期时间，供路由层使用
+      tokenExpiresAt: account.expiresAt || null,
+
       expiresAt: account.subscriptionExpiresAt || null,
       platform: account.platform || 'droid',
 

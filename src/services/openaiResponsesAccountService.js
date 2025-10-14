@@ -224,6 +224,9 @@ class OpenAIResponsesAccountService {
           account.isActive = account.isActive === 'true'
 
           // ✅ 前端显示订阅过期时间（业务字段）
+          // ✅ 保存原始的 token 过期时间（如果有）
+          account.tokenExpiresAt = account.expiresAt || null
+          // 将订阅过期时间映射到 expiresAt
           account.expiresAt = account.subscriptionExpiresAt || null
           account.platform = account.platform || 'openai-responses'
 
