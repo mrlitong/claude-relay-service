@@ -1651,9 +1651,25 @@ load_config() {
         
         # 加载.env配置
         if [ -f "$APP_DIR/.env" ]; then
-            export $(cat "$APP_DIR/.env" | grep -v '^#' | xargs)
-            # 特别加载端口配置
+            # 使用更安全的方式加载环境变量（支持特殊字符）
+            while IFS='=' read -r key value; do
+                # 跳过注释和空行
+                [[ "$key" =~ ^#.*$ ]] && continue
+                [[ -z "$key" ]] && continue
+                # 移除值两端的引号（如果有）
+                value="${value%\"}"
+                value="${value#\"}"
+                value="${value%\'}"
+                value="${value#\'}"
+                # 导出变量
+                export "$key=$value"
+            done < "$APP_DIR/.env"
+
+            # 特别加载关键配置
             APP_PORT=$(grep "^PORT=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+            REDIS_HOST=$(grep "^REDIS_HOST=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+            REDIS_PORT=$(grep "^REDIS_PORT=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
+            REDIS_PASSWORD=$(grep "^REDIS_PASSWORD=" "$APP_DIR/.env" 2>/dev/null | cut -d'=' -f2)
         fi
     fi
 }
