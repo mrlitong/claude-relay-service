@@ -1,0 +1,45 @@
+{
+  "testApiKeys": [
+    {
+      "id": "test-key-1",
+      "key": "cr_test_1234567890",
+      "name": "Test API Key 1",
+      "status": "active",
+      "rateLimit": 100,
+      "permissions": "all"
+    },
+    {
+      "id": "test-key-2",
+      "key": "cr_test_0987654321",
+      "name": "Test API Key 2",
+      "status": "active",
+      "rateLimit": 50,
+      "permissions": "claude"
+    }
+  ],
+  "testAccounts": [
+    {
+      "id": "test-account-1",
+      "name": "Test Claude Account",
+      "type": "claude-official",
+      "status": "active",
+      "accessToken": "test_access_token",
+      "refreshToken": "test_refresh_token"
+    },
+    {
+      "id": "test-account-2",
+      "name": "Test Gemini Account",
+      "type": "gemini",
+      "status": "active",
+      "apiKey": "test_gemini_key"
+    }
+  ],
+  "testUsers": [
+    {
+      "id": "test-user-1",
+      "email": "test1@example.com",
+      "username": "testuser1",
+      "password": "$2a$10$test_hashed_password"
+    }
+  ]
+}
